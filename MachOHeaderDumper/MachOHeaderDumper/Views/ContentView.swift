@@ -58,7 +58,8 @@ struct ContentView: View {
                     isLoading: viewModel.isLoading,
                     statusMessage: viewModel.statusMessage,
                     errorMessage: viewModel.errorMessage,
-                    parsedDataIsAvailable: viewModel.parsedData != nil
+                    parsedDataIsAvailable: viewModel.parsedData != nil,
+                    demanglerStatus: viewModel.demanglerStatus
                 )
                 .padding(.bottom, 5) // Padding below status
 

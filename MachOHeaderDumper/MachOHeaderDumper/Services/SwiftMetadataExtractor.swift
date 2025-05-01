@@ -26,30 +26,23 @@ class SwiftMetadataExtractor {
     ) -> UnsafeMutablePointer<CChar>?
 
     // Store the function pointer, looked up during init
-    private let swiftDemangleFunction: SwiftDemangleFunc?
+    private let swiftDemangleFunction: DynamicSymbolLookup.SwiftDemangleFunc? // Use typealias from Lookup class
 
-    init(parsedData: ParsedMachOData, parser: MachOParser) {
-        self.parsedData = parsedData
-        self.parser = parser
-        // Use the utility class to find the function pointer
-        // Pass the path of the binary being parsed for the fallback lookup
-        self.swiftDemangleFunction = DynamicSymbolLookup.getSwiftDemangleFunctionPointer(
-            forBinaryPath: parsedData.fileURL.path
-        )
-        if self.swiftDemangleFunction == nil {
-            print("SwiftMetadataExtractor: Warning - Swift Demangler function pointer not found.")
-        } else {
-             print("SwiftMetadataExtractor: Info - Swift Demangler function pointer obtained.")
+    // FIX: Modify init to accept the function pointer
+        init(parsedData: ParsedMachOData,
+             parser: MachOParser,
+             demanglerFunc: DynamicSymbolLookup.SwiftDemangleFunc?) { // Accept optional pointer
+            self.parsedData = parsedData
+            self.parser = parser
+            self.swiftDemangleFunction = demanglerFunc // Assign passed-in pointer
         }
-    }
 
     // No deinit needed here for dlclose anymore
 
-    /// Extracts basic Swift type information (kind, mangled/demangled name, location).
-    func extract() throws -> ExtractedSwiftMetadata {
-        var swiftMeta = ExtractedSwiftMetadata()
-
-        guard let typesSection = findSwiftSection(named: "__swift5_types") else {
+    /// Extracts basic Swift type information. Demangling uses the provided function pointer.
+        func extract() throws -> ExtractedSwiftMetadata {
+            var swiftMeta = ExtractedSwiftMetadata()
+            guard let typesSection = findSwiftSection(named: "__swift5_types") else {
             print("ℹ️ SwiftMetadataExtractor: No __swift5_types section found.")
             return swiftMeta
         }
@@ -191,17 +184,16 @@ class SwiftMetadataExtractor {
         return SwiftTypeInfo(mangledName: mangledName, demangledName: nil, kind: kind, location: vmAddress)
     }
 
-    // MARK: - Demangling Helper
+    // MARK: - Demangling Helper (Uses stored function pointer)
 
     /// Demangles a single Swift symbol name using the loaded function pointer.
     /// Returns the original mangled name if demangling is unavailable or fails.
-    private func demangle(mangledName: String) -> String? { // Changed return to String? -> String always returns something
-       // Use the function pointer obtained during init
-       guard let demangleFunc = self.swiftDemangleFunction else {
-           return mangledName // Return original if demangler unavailable
-       }
+        private func demangle(mangledName: String) -> String? {
+           guard let demangleFunc = self.swiftDemangleFunction else {
+               return mangledName // Return original if demangler unavailable
+           }
 
-       var result: String = mangledName // Default to original name
+            var result: String = mangledName; mangledName.withCString { mptr in if let dptr = demangleFunc(mptr, strlen(mptr), nil, nil, 0) { result = String(cString: dptr); free(dptr); } }; return result
 
        // Use withCString for safety
        mangledName.withCString { mangledPtr in

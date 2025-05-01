@@ -14,6 +14,14 @@ import Darwin // For dlopen, dlsym, dlclose, dlerror
 /// Handles opening and closing library handles.
 class DynamicSymbolLookup {
 
+    // --- MOVED TYPEALIAS HERE ---
+        // Define the C function signature for _swift_demangle
+        typealias SwiftDemangleFunc = @convention(c) (
+            UnsafePointer<CChar>, Int, UnsafeMutablePointer<CChar>?, UnsafeMutablePointer<Int>?, UInt32
+        ) -> UnsafeMutablePointer<CChar>?
+        // --- END TYPEALIAS ---
+    
+    
     /// Attempts to find the runtime address of a symbol within a specific binary file.
     ///
     /// - Warning: Using dlopen on arbitrary paths can be risky and depends on the execution environment (e.g., TrollStore permissions) and the nature of the target binary. It may fail due to code signing, dependencies, architecture, or if the binary is not dynamically loadable.
@@ -76,20 +84,56 @@ class DynamicSymbolLookup {
          }
     }
 
-    // more methods e.g., for finding _swift_demangle
-    static func getSwiftDemangleFunctionPointer(forBinaryPath path: String? = nil) -> SwiftMetadataExtractor.SwiftDemangleFunc? {
-        var symAddress: UnsafeMutableRawPointer? = nil
+    /// Attempts to find the _swift_demangle function and returns its pointer and status.
+        /// - Parameter forBinaryPath: Optional path to the specific binary to check if not found globally.
+        /// - Returns: A tuple containing the function pointer (or nil) and the lookup status.
+        static func getSwiftDemangleFunctionPointer(forBinaryPath path: String? = nil) -> (function: SwiftDemangleFunc?, status: DemanglerStatus) {
+            let _ = dlerror() // Clear errors
+            var status: DemanglerStatus = .idle // Start idle
 
-        symAddress = findSymbolInLoadedImages(named: "_swift_demangle")
+            // Option 1: Look in default loaded images
+            if let handle = dlopen(nil, RTLD_LAZY) {
+                if let sym = dlsym(handle, "_swift_demangle") {
+                    print("ℹ️ DynamicLookup: Found _swift_demangle in loaded images.")
+                    status = .found
+                    return (unsafeBitCast(sym, to: SwiftDemangleFunc.self), status) // Return immediately on success
+                } else {
+                     let err = dlerror(); print("Note: DynamicLookup: _swift_demangle not found via dlopen(nil). \(err != nil ? String(cString: err!) : "")")
+                     status = .notFound // Not found globally yet
+                }
+                // Don't close handle from dlopen(nil)
+            } else {
+                let err = dlerror(); print("Warning: DynamicLookup: dlopen(nil) failed. \(err != nil ? String(cString: err!) : "")")
+                status = .lookupFailed // dlopen itself failed
+                 // Cannot proceed further if dlopen(nil) fails, maybe return early?
+                 // return (nil, status)
+            }
 
-        if symAddress == nil, let binaryPath = path {
-            symAddress = findSymbolAddress(named: "_swift_demangle", inBinaryAt: binaryPath)
-        }
 
-        if let validAddress = symAddress {
-             return unsafeBitCast(validAddress, to: SwiftMetadataExtractor.SwiftDemangleFunc.self)
-        } else {
-             return nil
+            // Option 2: Try opening the target binary if path provided and not already found/failed
+            if let binaryPath = path, status == .notFound { // Only try if path given and not found/failed yet
+                print("DynamicLookup: Attempting dlopen target binary for demangler: \(binaryPath)")
+                if let specificHandle = dlopen(binaryPath, RTLD_LAZY) {
+                     defer { dlclose(specificHandle) } // Ensure handle is closed this time
+                    if let sym = dlsym(specificHandle, "_swift_demangle") {
+                        print("ℹ️ DynamicLookup: Found _swift_demangle by dlopen'ing target binary.")
+                        status = .found
+                        return (unsafeBitCast(sym, to: SwiftDemangleFunc.self), status) // Return immediately
+                    } else {
+                         let err = dlerror(); print("Warning: DynamicLookup: _swift_demangle not found in target binary. \(err != nil ? String(cString: err!) : "")")
+                         status = .notFound // Still not found
+                    }
+                } else {
+                    let err = dlerror(); print("Warning: DynamicLookup: Failed to dlopen target binary '\(binaryPath)'. \(err != nil ? String(cString: err!) : "")")
+                    status = .lookupFailed // dlopen on target failed
+                }
+            }
+
+            // If we reach here, it means lookup failed or symbol wasn't found
+            print("DynamicLookup: _swift_demangle function pointer could not be obtained. Status: \(status)")
+            return (nil, status)
         }
     }
-}
+
+    // Make typealias accessible outside if needed elsewhere
+    // internal typealias SwiftDemangleFunc = DynamicSymbolLookup.SwiftDemangleFunc

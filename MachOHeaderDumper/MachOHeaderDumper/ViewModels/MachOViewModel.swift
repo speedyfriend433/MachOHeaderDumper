@@ -5,7 +5,7 @@
 //  Created by 이지안 on 4/30/25.
 //
 
-// File: ViewModels/MachOViewModel.swift (Corrected Final Status Logic)
+// File: ViewModels/MachOViewModel.swift (Complete Code - Corrected Swift Section Check)
 
 import Foundation
 import SwiftUI
@@ -27,6 +27,7 @@ class MachOViewModel: ObservableObject {
     @Published var extractedSwiftTypes: [SwiftTypeInfo] = []
     @Published var generatedHeader: String?
     @Published var processingUpdateId = UUID()
+    @Published var demanglerStatus: DemanglerStatus = .idle
 
     private var currentParser: MachOParser?
 
@@ -41,6 +42,7 @@ class MachOViewModel: ObservableObject {
         self.extractedProtocols = []
         self.extractedSwiftTypes = []
         self.generatedHeader = nil
+        self.demanglerStatus = .idle
         self.statusMessage = "Processing \(url.lastPathComponent)..."
         self.currentParser = nil
 
@@ -54,6 +56,8 @@ class MachOViewModel: ObservableObject {
             var taskHeaderTextResult: String? = nil
             var taskErrorResult: Error? = nil
             var taskObjCNotFoundErr: MachOParseError? = nil
+            var taskDemanglerFunc: DynamicSymbolLookup.SwiftDemangleFunc? = nil
+            var taskDemanglerStatus: DemanglerStatus = .idle
 
             do {
                 // --- Step 0: Resolve Path ---
@@ -66,18 +70,22 @@ class MachOViewModel: ObservableObject {
                 taskParsedDataResult = try await Task { try parser.parse() }.value
                 guard let parsedResult = taskParsedDataResult else { throw MachOParseError.mmapFailed(error: "Parsing returned nil data") }
 
-                // Update Status on MainActor (intermediate)
                 await MainActor.run {
-                    // Only update parser ref and status here, wait for final update for parsedData
+                    self.parsedData = parsedResult // Set parsedData early for status funcs
                     self.currentParser = parser
-                    self.statusMessage = self.generateSummary(for: parsedResult) + " Parsing dyld info..."
+                    self.statusMessage = self.generateSummary(for: parsedResult) + " Lookup demangler..." // Update status
                     print("✅ Successfully parsed: \(binaryURL.lastPathComponent)")
                     if parsedResult.isEncrypted { print("⚠️ Binary is marked as encrypted.") }
                 }
 
+                // --- Step 1.3: Lookup Demangler ---
+                let lookupResult = DynamicSymbolLookup.getSwiftDemangleFunctionPointer(forBinaryPath: binaryURL.path)
+                taskDemanglerFunc = lookupResult.function
+                taskDemanglerStatus = lookupResult.status
+                await MainActor.run { self.demanglerStatus = taskDemanglerStatus } // Update UI status
 
                 // --- Step 1.5: Parse Dyld Info ---
-                guard let currentParser = taskParser else { throw MachOParseError.mmapFailed(error: "Parser became nil unexpectedly") }
+                guard let currentParser = taskParser else { throw MachOParseError.mmapFailed(error: "Parser became nil unexpectedly") } // Use taskParser
                 do {
                     let dyldParser = try DyldInfoParser(parsedData: parsedResult)
                     taskDyldInfoResult = try dyldParser.parseAll()
@@ -87,19 +95,37 @@ class MachOViewModel: ObservableObject {
                 } catch {
                      print("❌ Error parsing dyld binding info: \(error)")
                 }
-                 // Update Status on MainActor (intermediate)
-                 await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Extracting Swift..." }
-
+                // Update status after dyld parsing
+                await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Extracting Swift..." }
 
                 // --- Step 2a: Attempt Swift Extraction ---
-                do {
-                    let swiftExtractor = SwiftMetadataExtractor(parsedData: parsedResult, parser: currentParser)
-                    taskSwiftMetaResult = try swiftExtractor.extract()
-                    print("✅ Extracted Swift metadata (\(taskSwiftMetaResult?.types.count ?? 0) types).")
-                } catch {
-                    print("⚠️ Warning: Swift metadata extraction failed: \(error)")
+                // FIX: Correctly check for the Swift types section
+                let swiftTypesSectionExists = parsedResult.loadCommands.contains { command in
+                    if case .segment64(let segCmd, let sections) = command {
+                        // Use helper to get segment name
+                        let segmentName = stringFromCChar16Tuple(segCmd.segname)
+                        return segmentName == "__TEXT" && sections.contains { $0.name == "__swift5_types" }
+                    }
+                    return false
                 }
-                 // Update Status on MainActor (intermediate)
+
+                if swiftTypesSectionExists {
+                     await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Extracting Swift..." } // Update status *before* extraction
+                     do {
+                         let swiftExtractor = SwiftMetadataExtractor(parsedData: parsedResult,
+                                                                    parser: currentParser,
+                                                                    demanglerFunc: taskDemanglerFunc) // Pass pointer
+                         taskSwiftMetaResult = try swiftExtractor.extract()
+                         print("✅ Extracted Swift metadata (\(taskSwiftMetaResult?.types.count ?? 0) types).")
+                     } catch {
+                         print("⚠️ Warning: Swift metadata extraction failed: \(error)")
+                     }
+                 } else {
+                      // Swift section not found, update demangler status if it wasn't already set
+                      if taskDemanglerStatus == .idle { taskDemanglerStatus = .notAttempted }
+                      print("ℹ️ No Swift sections found, skipping Swift extraction.")
+                 }
+                 // Update status before ObjC extraction
                  await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Extracting ObjC..." }
 
 
@@ -129,73 +155,79 @@ class MachOViewModel: ObservableObject {
 
             // --- Final Update on MainActor ---
                         await MainActor.run {
-                            // Assign results from local task variables to published properties
+                            // Assign all results collected in background to @Published properties FIRST
                             self.currentParser = taskParser
                             self.parsedData = taskParsedDataResult
                             self.parsedDyldInfo = taskDyldInfoResult
-                            self.extractedSwiftTypes = taskSwiftMetaResult?.types ?? []
+                            self.extractedSwiftTypes = taskSwiftMetaResult?.types ?? [] // Assign Swift types
 
-                            // ---- MOST EXPLICIT WAY TO HANDLE OBJ-C RESULTS ----
+                            // Assign ObjC types using the explicit intermediate arrays
                             var finalClasses: [ObjCClass] = []
                             var finalProtocols: [ObjCProtocol] = []
-
                             if let objcMeta = taskObjCMetaResult {
-                                // If we have metadata results, explicitly create Arrays from the values
                                 finalClasses = Array(objcMeta.classes.values)
                                 finalProtocols = Array(objcMeta.protocols.values)
                             }
-                            // Assign the definitely-typed arrays and sort them
                             self.extractedClasses = finalClasses.sorted { $0.name < $1.name }
                             self.extractedProtocols = finalProtocols.sorted { $0.name < $1.name }
-                            // ---- END EXPLICIT HANDLING ----
 
+                            self.generatedHeader = taskHeaderTextResult // Assign header
+                            self.demanglerStatus = taskDemanglerStatus // Assign final demangler status
 
-                            self.generatedHeader = taskHeaderTextResult
-                            self.isLoading = false // Finish loading
+                            self.isLoading = false // Finish loading AFTER all data assignments
 
-                // Set final status and error messages based on outcomes
-                if let error = taskErrorResult {
-                    // Fatal error occurred
-                    self.errorMessage = "Error: \(error.localizedDescription)"
-                    self.statusMessage = "Error processing file."
-                    // Clear data if a fatal error occurred during parsing itself
-                    if taskParsedDataResult == nil { self.parsedData = nil }
+                            // Set final status and error messages based on outcomes
+                            if let error = taskErrorResult {
+                                // Fatal error occurred
+                                self.errorMessage = "Error: \(error.localizedDescription)"
+                                self.statusMessage = "Error processing file."
+                                if taskParsedDataResult == nil { self.parsedData = nil }
 
-                } else if let objcError = taskObjCNotFoundErr {
-                     // Only non-fatal "No ObjC Meta" occurred
-                     self.errorMessage = objcError.localizedDescription
-                     // Base status on the successfully parsed data
-                     guard let pd = self.parsedData else {
-                          self.statusMessage = "Error: State inconsistency."; return // Should not happen
-                     }
-                     var finalStatus = self.generateSummary(for: pd) + " No ObjC metadata."
-                     // Check the already updated published property for Swift types
-                     if !self.extractedSwiftTypes.isEmpty {
-                         finalStatus += " Found \(self.extractedSwiftTypes.count) Swift types."
-                     } else if taskSwiftMetaResult != nil { // Check if Swift extraction ran
-                         finalStatus += " No Swift types found."
-                     }
-                     self.statusMessage = finalStatus
+                            } else if let objcError = taskObjCNotFoundErr {
+                                 // Only non-fatal "No ObjC Meta" occurred
+                                 self.errorMessage = objcError.localizedDescription
+                                 // Base status on the successfully parsed data (now in self.parsedData)
+                                 guard let pd = self.parsedData else {
+                                      self.statusMessage = "Error: State inconsistency."; return
+                                 }
+                                 var finalStatus = self.generateSummary(for: pd) + " No ObjC metadata."
+                                 // Use the UPDATED self.extractedSwiftTypes property here
+                                 if !self.extractedSwiftTypes.isEmpty {
+                                     finalStatus += " Found \(self.extractedSwiftTypes.count) Swift types."
+                                 } else if taskSwiftMetaResult != nil { // Check if Swift extraction ran
+                                     finalStatus += " No Swift types found."
+                                 }
+                                 self.statusMessage = finalStatus
 
-                 } else {
-                    // Success path (parsing completed, ObjC meta might or might not exist but didn't error fatally)
-                     self.errorMessage = nil
-                                         guard let pd = self.parsedData else { self.statusMessage = "Error: State inconsistency."; return }
-                                         var finalStatus = self.generateSummary(for: pd)
-                                         // Use the already assigned properties here now
-                                         if !self.extractedClasses.isEmpty { finalStatus += " Found \(self.extractedClasses.count) classes." }
-                                         else if taskObjCMetaResult != nil { finalStatus += " No ObjC classes found." } // Check if extraction ran
-                                         if !self.extractedSwiftTypes.isEmpty { finalStatus += " Found \(self.extractedSwiftTypes.count) Swift types."}
-                                         else if taskSwiftMetaResult != nil { finalStatus += " No Swift types found." } // Check if extraction ran
-                                         self.statusMessage = finalStatus.contains("Found") ? finalStatus : "Processing complete."
-                                     }
+                             } else {
+                                // Success path
+                                self.errorMessage = nil
+                                guard let pd = self.parsedData else {
+                                     self.statusMessage = "Error: State inconsistency."; return
+                                }
+                                var finalStatus = self.generateSummary(for: pd)
+                                // Use the UPDATED self.extractedClasses property here
+                                if !self.extractedClasses.isEmpty {
+                                    finalStatus += " Found \(self.extractedClasses.count) classes."
+                                } else if taskObjCMetaResult != nil { // Check if ObjC extraction ran
+                                    finalStatus += " No ObjC classes found."
+                                }
+                                // Use the UPDATED self.extractedSwiftTypes property here
+                                if !self.extractedSwiftTypes.isEmpty {
+                                     finalStatus += " Found \(self.extractedSwiftTypes.count) Swift types."
+                                } else if taskSwiftMetaResult != nil { // Check if Swift extraction ran
+                                     finalStatus += " No Swift types found."
+                                }
+                                self.statusMessage = finalStatus.contains("Found") ? finalStatus : "Processing complete. No specific data extracted."
+                            }
 
-                                     // Trigger UI update via counter
-                                     self.processingUpdateId = UUID()
+                            // --- Trigger UI update via counter ---
+                            // Do this LAST after all state is set
+                            self.processingUpdateId = UUID()
 
-                                 } // End MainActor.run
-                             } // End Task.detached
-                         } // End processURL
+                        } // End MainActor.run
+                    } // End Task.detached
+                } // End processURL
 
     // --- Helper Functions ---
 
