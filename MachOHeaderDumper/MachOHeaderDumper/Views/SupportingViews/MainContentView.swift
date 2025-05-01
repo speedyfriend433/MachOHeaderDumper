@@ -19,10 +19,20 @@ struct MainContentView: View {
                 Spacer(); ProgressView("Processing...");
                 Spacer() } else
             if let parsed = viewModel.parsedData {
-                    switch selectedView { case .header:
-                        if let headerText = viewModel.generatedHeader {
-                            HeaderDisplayView(headerText: headerText) }
-                        else { ContentUnavailableView(title: "ObjC Header Not Available", description: "No Objective-C classes or protocols were found.") }
+                    switch selectedView {
+                    case .header:
+                        if let headerText = viewModel.generatedHeader,
+                                               (!viewModel.extractedClasses.isEmpty || !viewModel.extractedProtocols.isEmpty) {
+                                                HeaderDisplayView(headerText: headerText)
+                                            } else {
+                                                // Show unavailable if header is nil OR if it was generated but empty (no classes/protos)
+                                                ContentUnavailableView(
+                                                    title: "No Objective-C Interfaces",
+                                                    description: viewModel.errorMessage == MachOParseError.noObjectiveCMetadataFound.localizedDescription
+                                                        ? "Relevant ObjC sections not found." // Error case
+                                                        : "No user-defined classes or protocols were extracted." // Found sections but empty
+                                                )
+                                            }
                     case .info:
                         InfoView(parsedData: parsed);
                     case .loadCmds:
@@ -55,7 +65,12 @@ struct MainContentView: View {
                              SelectorRefsView(refs: viewModel.selectorReferences)
                          }
                         else { ContentUnavailableView(title: "No Selector References", description: "__objc_selrefs section not found or empty.") }
+                    case .categories: // <-- ADDED Case
+                                         if !viewModel.extractedCategories.isEmpty {
+                                             CategoriesView(categories: viewModel.extractedCategories)
+                                         } else { ContentUnavailableView(title: "No Categories Found", description: "__objc_catlist section not found or empty.") }
     } }
+            
             else {
                 if viewModel.errorMessage == nil {
                     ContentUnavailableView(title: "No File Loaded", description: "Tap the button above to import a Mach-O file.", systemImage: "doc.badge.plus") }

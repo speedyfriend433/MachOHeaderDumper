@@ -5,7 +5,7 @@
 //  Created by 이지안 on 4/30/25.
 //
 
-// File: ViewModels/MachOViewModel.swift (Complete Code - Corrected Swift Section Check)
+// File: ViewModels/MachOViewModel.swift (Complete Code - Corrected Status Scoping)
 
 import Foundation
 import SwiftUI
@@ -25,18 +25,19 @@ class MachOViewModel: ObservableObject {
     @Published var extractedClasses: [ObjCClass] = []
     @Published var extractedProtocols: [ObjCProtocol] = []
     @Published var extractedSwiftTypes: [SwiftTypeInfo] = []
-    @Published var generatedHeader: String?
-    @Published var processingUpdateId = UUID()
-    @Published var demanglerStatus: DemanglerStatus = .idle
     @Published var foundStrings: [FoundString] = []
     @Published var functionStarts: [FunctionStart] = []
     @Published var selectorReferences: [SelectorReference] = []
+    @Published var extractedCategories: [ExtractedCategory] = [] // Added for categories
+    @Published var generatedHeader: String?
+    @Published var processingUpdateId = UUID()
+    @Published var demanglerStatus: DemanglerStatus = .idle
 
     private var currentParser: MachOParser?
 
     // --- Main processing function ---
     func processURL(_ url: URL) {
-        // Reset state
+        // Reset state immediately on MainActor
         self.isLoading = true
         self.errorMessage = nil
         self.parsedData = nil
@@ -44,13 +45,14 @@ class MachOViewModel: ObservableObject {
         self.extractedClasses = []
         self.extractedProtocols = []
         self.extractedSwiftTypes = []
-        self.generatedHeader = nil
-        self.demanglerStatus = .idle
         self.foundStrings = []
         self.functionStarts = []
+        self.selectorReferences = []
+        self.extractedCategories = [] // Reset categories
+        self.generatedHeader = nil
+        self.demanglerStatus = .idle
         self.statusMessage = "Processing \(url.lastPathComponent)..."
         self.currentParser = nil
-        self.selectorReferences = []
 
         Task.detached(priority: .userInitiated) {
             // Local task variables
@@ -79,199 +81,179 @@ class MachOViewModel: ObservableObject {
                 guard let parsedResult = taskParsedDataResult else { throw MachOParseError.mmapFailed(error: "Parsing returned nil data") }
 
                 await MainActor.run {
-                    self.parsedData = parsedResult // Set parsedData early for status funcs
                     self.currentParser = parser
-                    self.statusMessage = self.generateSummary(for: parsedResult) + " Lookup demangler..." // Update status
+                    self.statusMessage = self.generateSummary(for: parsedResult) + " Scanning strings..."
                     print("✅ Successfully parsed: \(binaryURL.lastPathComponent)")
                     if parsedResult.isEncrypted { print("⚠️ Binary is marked as encrypted.") }
                 }
 
-                // --- Step 1.1 (NEW): Scan for Strings ---
-                                // Can run concurrently or sequentially. Let's do it sequentially for now.
-                                 await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Scanning strings..." }
-                                // Use static scanner method
-                                taskFoundStringsResult = StringScanner.scanForStrings(in: parsedResult) // Assign to local var
-                                print("✅ Scanned for strings.")
-                
-                // --- Step 1.2 (NEW): Parse Function Starts ---
-                                await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Parsing func starts..." }
-                                do {
-                                    let addresses = try FunctionStartsParser.parseFunctionStarts(in: parsedResult)
-                                    // Convert addresses to FunctionStart structs
-                                    taskFunctionStartsResult = addresses.map { FunctionStart(address: $0) }
-                                    print("✅ Parsed \(taskFunctionStartsResult?.count ?? 0) function starts.")
-                                } catch let error as FunctionStartsParseError where error == .commandNotFound {
-                                     print("ℹ️ LC_FUNCTION_STARTS not found.")
-                                     taskFunctionStartsResult = [] // Indicate parsing ran but found nothing
-                                } catch {
-                                     print("❌ Error parsing function starts: \(error)")
-                                     // Treat as non-fatal for now?
-                                      await MainActor.run { self.errorMessage = "Warning: Function starts parsing failed: \(error.localizedDescription)" }
-                                      taskFunctionStartsResult = nil // Indicate failure
-                                }
-                
+                // --- Step 1.1: Scan for Strings ---
+                taskFoundStringsResult = StringScanner.scanForStrings(in: parsedResult)
+                print("✅ Scanned for strings (\(taskFoundStringsResult?.count ?? 0) found).")
+                await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Parsing func starts..." }
+
+
+                // --- Step 1.2: Parse Function Starts ---
+                do { let addrs = try FunctionStartsParser.parseFunctionStarts(in: parsedResult); taskFunctionStartsResult = addrs.map { FunctionStart(address: $0) }; print("✅ Parsed \(taskFunctionStartsResult?.count ?? 0) function starts.") }
+                catch let error as FunctionStartsParseError where error == .commandNotFound { print("ℹ️ LC_FUNCTION_STARTS not found."); taskFunctionStartsResult = [] }
+                catch { print("❌ Error parsing function starts: \(error)"); taskFunctionStartsResult = nil }
+                await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Lookup demangler..." }
+
+
                 // --- Step 1.3: Lookup Demangler ---
                 let lookupResult = DynamicSymbolLookup.getSwiftDemangleFunctionPointer(forBinaryPath: binaryURL.path)
                 taskDemanglerFunc = lookupResult.function
                 taskDemanglerStatus = lookupResult.status
-                await MainActor.run { self.demanglerStatus = taskDemanglerStatus } // Update UI status
+                // Status updated in final block
+
 
                 // --- Step 1.5: Parse Dyld Info ---
-                guard let currentParser = taskParser else { throw MachOParseError.mmapFailed(error: "Parser became nil unexpectedly") } // Use taskParser
-                do {
-                    let dyldParser = try DyldInfoParser(parsedData: parsedResult)
-                    taskDyldInfoResult = try dyldParser.parseAll()
-                    print("✅ Successfully parsed dyld binding info.")
-                } catch let error as DyldInfoParseError where error == .missingDyldInfoCommand {
-                     print("ℹ️ Dyld info command not found.")
-                } catch {
-                     print("❌ Error parsing dyld binding info: \(error)")
-                }
-                // Update status after dyld parsing
+                guard let currentParser = taskParser else { throw MachOParseError.mmapFailed(error: "Parser became nil unexpectedly") }
+                do { let dyldParser = try DyldInfoParser(parsedData: parsedResult); taskDyldInfoResult = try dyldParser.parseAll(); print("✅ Successfully parsed dyld info.") }
+                catch let error as DyldInfoParseError where error == .missingDyldInfoCommand { print("ℹ️ Dyld info command not found.") }
+                catch { print("❌ Error parsing dyld info: \(error)") }
                 await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Extracting Swift..." }
 
-                // --- Step 2a: Attempt Swift Extraction ---
-                // FIX: Correctly check for the Swift types section
-                let swiftTypesSectionExists = parsedResult.loadCommands.contains { command in
-                    if case .segment64(let segCmd, let sections) = command {
-                        // Use helper to get segment name
-                        let segmentName = stringFromCChar16Tuple(segCmd.segname)
-                        return segmentName == "__TEXT" && sections.contains { $0.name == "__swift5_types" }
-                    }
-                    return false
-                }
 
+                // --- Step 2a: Attempt Swift Extraction ---
+                let swiftTypesSectionExists = parsedResult.loadCommands.contains { c in if case .segment64(let s, let sects) = c { return stringFromCChar16Tuple(s.segname) == "__TEXT" && sects.contains { $0.name == "__swift5_types" } } else { return false } }
                 if swiftTypesSectionExists {
-                     await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Extracting Swift..." } // Update status *before* extraction
-                     do {
-                         let swiftExtractor = SwiftMetadataExtractor(parsedData: parsedResult,
-                                                                    parser: currentParser,
-                                                                    demanglerFunc: taskDemanglerFunc) // Pass pointer
-                         taskSwiftMetaResult = try swiftExtractor.extract()
-                         print("✅ Extracted Swift metadata (\(taskSwiftMetaResult?.types.count ?? 0) types).")
-                     } catch {
-                         print("⚠️ Warning: Swift metadata extraction failed: \(error)")
-                     }
-                 } else {
-                      // Swift section not found, update demangler status if it wasn't already set
-                      if taskDemanglerStatus == .idle { taskDemanglerStatus = .notAttempted }
-                      print("ℹ️ No Swift sections found, skipping Swift extraction.")
-                 }
-                 // Update status before ObjC extraction
+                    do { let extr = SwiftMetadataExtractor(parsedData: parsedResult, parser: currentParser, demanglerFunc: taskDemanglerFunc); taskSwiftMetaResult = try extr.extract(); print("✅ Extracted Swift (\(taskSwiftMetaResult?.types.count ?? 0) types).") }
+                     catch { print("⚠️ Swift extraction failed: \(error)") }
+                 } else { if taskDemanglerStatus == .idle { taskDemanglerStatus = .notAttempted }; print("ℹ️ No Swift sections found.") }
                  await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Extracting ObjC..." }
 
 
                 // --- Step 2b: Attempt ObjC Extraction ---
-                do {
-                    let extractor = ObjCMetadataExtractor(parsedData: parsedResult, parser: currentParser)
-                    taskObjCMetaResult = try await extractor.extract()
-                    print("✅ Successfully extracted ObjC metadata.")
-                } catch let error as MachOParseError where error == .noObjectiveCMetadataFound {
-                    print("ℹ️ No Objective-C metadata found.")
-                    taskObjCNotFoundErr = error
-                } catch { throw error }
+                do { let extr = ObjCMetadataExtractor(parsedData: parsedResult, parser: currentParser); taskObjCMetaResult = try await extr.extract(); print("✅ Extracted ObjC.") }
+                catch let error as MachOParseError where error == .noObjectiveCMetadataFound { print("ℹ️ No ObjC metadata found."); taskObjCNotFoundErr = error }
+                catch { throw error }
 
 
-                // --- Step 3: Generate Header (ObjC only for now) ---
-                if let validObjCMeta = taskObjCMetaResult {
-                    let headerGenerator = HeaderGenerator(metadata: validObjCMeta)
-                    let includeIvars = await MainActor.run { self.showIvarsInHeader }
-                    taskHeaderTextResult = try await headerGenerator.generateHeader(includeIvarsInHeader: includeIvars)
-                    print("✅ Successfully generated ObjC header.")
-                }
+                // --- Step 3: Generate Header ---
+                if let validObjCMeta = taskObjCMetaResult { let gen = HeaderGenerator(metadata: validObjCMeta); let ivars = await MainActor.run { self.showIvarsInHeader }; taskHeaderTextResult = try await gen.generateHeader(includeIvarsInHeader: ivars); print("✅ Generated ObjC header.") }
 
-            } catch { // Catch outer errors
+            } catch { // Catch outer fatal errors
                 taskErrorResult = error
                 print("❌ Error during processing: \(error)")
             }
 
             // --- Final Update on MainActor ---
-                        await MainActor.run {
-                            // Assign all results collected in background to @Published properties FIRST
-                            self.currentParser = taskParser
-                            self.parsedData = taskParsedDataResult
-                            self.foundStrings = taskFoundStringsResult ?? []
-                            self.functionStarts = taskFunctionStartsResult ?? []
-                            self.parsedDyldInfo = taskDyldInfoResult
-                            self.extractedSwiftTypes = taskSwiftMetaResult?.types ?? [] // Assign Swift types
+            await MainActor.run {
+                // Assign all results collected in background
+                self.currentParser = taskParser
+                self.parsedData = taskParsedDataResult
+                self.parsedDyldInfo = taskDyldInfoResult
+                self.extractedSwiftTypes = taskSwiftMetaResult?.types ?? []
+                self.foundStrings = taskFoundStringsResult ?? []
+                self.functionStarts = taskFunctionStartsResult ?? []
 
-                            // Assign ObjC types using the explicit intermediate arrays
-                            var finalClasses: [ObjCClass] = []
-                            var finalProtocols: [ObjCProtocol] = []
-                            if let objcMeta = taskObjCMetaResult {
-                                finalClasses = Array(objcMeta.classes.values)
-                                finalProtocols = Array(objcMeta.protocols.values)
-                            }
-                            self.extractedClasses = finalClasses.sorted { $0.name < $1.name }
-                            self.extractedProtocols = finalProtocols.sorted { $0.name < $1.name }
-                            self.selectorReferences = taskObjCMetaResult?.selectorReferences ?? []
+                // Explicit ObjC array handling
+                var finalClasses: [ObjCClass] = []
+                var finalProtocols: [ObjCProtocol] = []
+                var finalSelRefs: [SelectorReference] = []
+                var finalCategories: [ExtractedCategory] = [] // Added
+                if let objcMeta = taskObjCMetaResult {
+                    finalClasses = Array(objcMeta.classes.values)
+                    finalProtocols = Array(objcMeta.protocols.values)
+                    finalSelRefs = objcMeta.selectorReferences
+                    finalCategories = objcMeta.categories // Added
+                }
+                self.extractedClasses = finalClasses.sorted { $0.name < $1.name }
+                self.extractedProtocols = finalProtocols.sorted { $0.name < $1.name }
+                self.selectorReferences = finalSelRefs // Assign SelRefs
+                self.extractedCategories = finalCategories // Assign Categories
 
-                            self.generatedHeader = taskHeaderTextResult // Assign header
-                            self.demanglerStatus = taskDemanglerStatus // Assign final demangler status
+                self.generatedHeader = taskHeaderTextResult
+                self.demanglerStatus = taskDemanglerStatus
 
-                            self.isLoading = false // Finish loading AFTER all data assignments
+                self.isLoading = false // Finish loading
 
-                            // Set final status and error messages based on outcomes
-                            if let error = taskErrorResult {
-                                // Fatal error occurred
-                                self.errorMessage = "Error: \(error.localizedDescription)"
-                                self.statusMessage = "Error processing file."
-                                if taskParsedDataResult == nil { self.parsedData = nil }
+                // --- CORRECTED Status/Error Logic ---
+                // Declare finalStatus variable *before* the if/else block
+                var finalStatus = ""
+                guard let pd = self.parsedData else {
+                    // This should only happen if parsing itself failed fatally
+                    self.errorMessage = taskErrorResult?.localizedDescription ?? "Unknown parsing error."
+                    self.statusMessage = "Error during initial parsing."
+                    self.processingUpdateId = UUID(); // Trigger update
+                    return // Exit early
+                }
 
-                            } else if let objcError = taskObjCNotFoundErr {
-                                 // Only non-fatal "No ObjC Meta" occurred
-                                 self.errorMessage = objcError.localizedDescription
-                                 // Base status on the successfully parsed data (now in self.parsedData)
-                                 guard let pd = self.parsedData else {
-                                      self.statusMessage = "Error: State inconsistency."; return
-                                 }
-                                 var finalStatus = self.generateSummary(for: pd) + " No ObjC metadata."
-                                 // Use the UPDATED self.extractedSwiftTypes property here
-                                 if !self.extractedSwiftTypes.isEmpty {
-                                     finalStatus += " Found \(self.extractedSwiftTypes.count) Swift types."
-                                 } else if taskSwiftMetaResult != nil { // Check if Swift extraction ran
-                                     finalStatus += " No Swift types found."
-                                 }
-                                 self.statusMessage = finalStatus
+                // Start building status string
+                finalStatus = self.generateSummary(for: pd)
 
-                             } else {
-                                // Success path
-                                self.errorMessage = nil
-                                guard let pd = self.parsedData else {
-                                     self.statusMessage = "Error: State inconsistency."; return
-                                }
-                                var finalStatus = self.generateSummary(for: pd)
-                                // Use the UPDATED self.extractedClasses property here
-                                if !self.extractedClasses.isEmpty {
-                                    finalStatus += " Found \(self.extractedClasses.count) classes."
-                                } else if taskObjCMetaResult != nil { // Check if ObjC extraction ran
-                                    finalStatus += " No ObjC classes found."
-                                }
-                                // Use the UPDATED self.extractedSwiftTypes property here
-                                if !self.extractedSwiftTypes.isEmpty {
-                                     finalStatus += " Found \(self.extractedSwiftTypes.count) Swift types."
-                                } else if taskSwiftMetaResult != nil { // Check if Swift extraction ran
-                                     finalStatus += " No Swift types found."
-                                }
-                                 if !self.foundStrings.isEmpty { finalStatus += " Found \(self.foundStrings.count) strings." } // <-- ADD String Count
-                                 if !self.functionStarts.isEmpty { finalStatus += " Found \(self.functionStarts.count) func starts." } // <-- ADD Count
-                                 if !self.selectorReferences.isEmpty { finalStatus += " Found \(self.selectorReferences.count) sel refs." } // <-- ADD Count
-                                                      self.statusMessage = finalStatus.contains("Found") ? finalStatus : "Processing complete."
-                                                  }
+                // Set error/status based on outcomes
+                if let error = taskErrorResult {
+                    // Fatal error occurred after successful parsing
+                    self.errorMessage = "Error: \(error.localizedDescription)"
+                    finalStatus += " Error occurred." // Append to base summary
+                } else if let objcError = taskObjCNotFoundErr {
+                    // Only non-fatal "No ObjC Meta" occurred
+                    self.errorMessage = objcError.localizedDescription // Show as non-fatal info/warning
+                    finalStatus += " No ObjC metadata." // Append info
+                    // Add other counts if available
+                    if !self.extractedSwiftTypes.isEmpty { finalStatus += " Found \(self.extractedSwiftTypes.count) Swift types." }
+                    if !self.foundStrings.isEmpty { finalStatus += " \(self.foundStrings.count) Strs."}
+                    if !self.functionStarts.isEmpty { finalStatus += " \(self.functionStarts.count) Funcs."}
+                    if !self.selectorReferences.isEmpty { finalStatus += " \(self.selectorReferences.count) SelRefs."} // SelRefs *can* exist without classes
+                 } else {
+                    // Success path (parsing completed, no fatal errors, ObjC extraction didn't throw missing sections)
+                    self.errorMessage = nil // Clear previous errors
+                    var foundItems = false // Track if anything interesting was found
 
-                            // --- Trigger UI update via counter ---
-                            // Do this LAST after all state is set
-                            self.processingUpdateId = UUID()
+                    // Append counts for found items
+                    if !self.extractedClasses.isEmpty || !self.extractedProtocols.isEmpty {
+                        finalStatus += " Found \(self.extractedClasses.count) Cls, \(self.extractedProtocols.count) Proto."
+                        foundItems = true
+                    } else if taskObjCMetaResult != nil { // ObjC ran but found no interfaces
+                        finalStatus += " No ObjC interfaces."
+                    }
+                    // Only mention categories if classes/protocols weren't the primary find
+                    if !self.extractedCategories.isEmpty && self.extractedClasses.isEmpty && self.extractedProtocols.isEmpty {
+                         finalStatus += " Found \(self.extractedCategories.count) Cats."
+                         foundItems = true
+                    }
+                    if !self.selectorReferences.isEmpty {
+                        finalStatus += " \(self.selectorReferences.count) SelRefs."
+                        // Consider selrefs less "interesting" than classes/protocols/swift for foundItems flag? Maybe.
+                        if !foundItems { foundItems = true }
+                    }
+                    if !self.extractedSwiftTypes.isEmpty {
+                         finalStatus += " Found \(self.extractedSwiftTypes.count) Swift types."
+                         foundItems = true
+                    } else if taskSwiftMetaResult != nil {
+                         finalStatus += " No Swift types."
+                    }
+                    if !self.foundStrings.isEmpty { finalStatus += " \(self.foundStrings.count) Strs."}
+                    if !self.functionStarts.isEmpty { finalStatus += " \(self.functionStarts.count) Funcs."}
 
-                        } // End MainActor.run
-                    } // End Task.detached
-                } // End processURL
+                    // Adjust final message if nothing specific was found
+                    if !foundItems && taskObjCMetaResult != nil && taskSwiftMetaResult != nil {
+                        finalStatus = self.generateSummary(for: pd) + " Processed. No specific interfaces/types found."
+                    } else if !finalStatus.contains("Found") {
+                         // Fallback if somehow no counts were added but no error occurred
+                         finalStatus = self.generateSummary(for: pd) + " Processing complete."
+                    }
+                }
+                // Assign the constructed status message
+                self.statusMessage = finalStatus
+                // --- END CORRECTED STATUS/ERROR ---
+
+
+                // Trigger UI update
+                print("ViewModel: Publishing final update ID.") // Debug log
+                self.processingUpdateId = UUID()
+
+            } // End MainActor.run
+        } // End Task.detached
+    } // End processURL
 
     // --- Helper Functions ---
 
     // Should remain nonisolated
     private nonisolated func resolveBinaryPath(for url: URL) throws -> URL {
-        // ... implementation ...
+
         var isDirectory: ObjCBool = false; guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return url }; let fm = FileManager.default; let ext = url.pathExtension.lowercased(); if ext == "app" || ext == "framework" { let infoURL = url.appendingPathComponent("Info.plist"); guard fm.fileExists(atPath: infoURL.path) else { let defName = url.deletingPathExtension().lastPathComponent; let binURL = url.appendingPathComponent(defName); return fm.fileExists(atPath: binURL.path) ? binURL : url }; do { let data = try Data(contentsOf: infoURL); if let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String:Any], let exec = plist["CFBundleExecutable"] as? String { let binURL = url.appendingPathComponent(exec); if fm.fileExists(atPath: binURL.path) { return binURL } else { throw MachOParseError.fileNotFound(path: binURL.path) } } else { let defName = url.deletingPathExtension().lastPathComponent; let binURL = url.appendingPathComponent(defName); return fm.fileExists(atPath: binURL.path) ? binURL : url } } catch { return url } } else { return url }
     }
 

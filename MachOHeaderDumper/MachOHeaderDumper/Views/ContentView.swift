@@ -5,7 +5,7 @@
 //  Created by 이지안 on 4/30/25.
 //
 
-// File: Views/ContentView.swift (Enhanced UI - Corrected Braces & Structure)
+// File: Views/ContentView.swift (Isolate by replacing MainContentView call)
 
 import SwiftUI
 
@@ -19,79 +19,66 @@ struct ContentView: View {
         case header = "ObjC Header"
         case swiftTypes = "Swift Types"
         case info = "Info"
+        case categories = "Categories" // Added
         case loadCmds = "Load Cmds"
-        case strings = "Strings"
-        case funcStarts = "Func Starts"
+        case strings = "Strings"       // Added
+        case funcStarts = "Func Starts" // Added
         case symbols = "Symbols"
         case dyldInfo = "DyldInfo"
         case exports = "Exports"
-        case selectorRefs = "Sel Refs"
+        case selectorRefs = "Sel Refs" // Added
         var id: String { self.rawValue }
     }
 
     var body: some View {
         NavigationView {
-            VStack(spacing: 0) { // Use spacing 0 for tighter layout control
+            VStack(spacing: 0) { // Use spacing 0
 
-                // MARK: - Top Bar (File Name & Import Button)
+                // Top Bar
                 HStack {
-                    // Display current file name if available
-                    if let fileURL = viewModel.parsedData?.fileURL {
-                        Text(fileURL.lastPathComponent)
-                            .font(.headline)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .id("fileName_\(fileURL.path)") // Add ID for updates
-                    } else {
-                        Text("No File Selected")
-                            .font(.headline)
-                            .foregroundColor(.gray)
-                    }
+                    if let fileURL = viewModel.parsedData?.fileURL { Text(fileURL.lastPathComponent).font(.headline).lineLimit(1).truncationMode(.middle).id("fileName_\(fileURL.path)") }
+                    else { Text("No File Selected").font(.headline).foregroundColor(.gray) }
                     Spacer()
-                    // Use ControlsView struct directly
                     ControlsView(isLoading: viewModel.isLoading) { showFilePicker = true }
                 }
-                .padding(.horizontal)
-                .padding(.top, 10) // Add consistent padding
+                .padding(.horizontal).padding(.top, 10).padding(.bottom, 5)
+
+                // Status & Error
+                StatusErrorView(isLoading: viewModel.isLoading, statusMessage: viewModel.statusMessage, errorMessage: viewModel.errorMessage, parsedDataIsAvailable: viewModel.parsedData != nil, demanglerStatus: viewModel.demanglerStatus)
                 .padding(.bottom, 5)
 
-                // MARK: - Status & Error Display Area
-                // Use StatusErrorView struct directly
-                StatusErrorView(
-                    isLoading: viewModel.isLoading,
-                    statusMessage: viewModel.statusMessage,
-                    errorMessage: viewModel.errorMessage,
-                    parsedDataIsAvailable: viewModel.parsedData != nil,
-                    demanglerStatus: viewModel.demanglerStatus
-                )
-                .padding(.bottom, 5) // Padding below status
-
-                // MARK: - View Selector & Conditional Options
-                // Use ViewSelectorView struct directly if data parsed and not loading
+                // View Selector
                 if viewModel.parsedData != nil && !viewModel.isLoading {
                     ViewSelectorView(viewModel: viewModel, selectedView: $selectedView)
-                        .padding(.bottom, 5) // Padding below selector
-                    Divider() // Show divider only when selector is visible
+                        .padding(.bottom, 5)
+                    Divider()
                 } else if !viewModel.isLoading && viewModel.parsedData == nil {
-                    // Optionally add a smaller divider or just rely on spacing
-                    // Divider().padding(.horizontal)
+                    // Divider() // Optional divider
                 }
 
-
-                // MARK: - Main Content Area
-                // Use MainContentView struct directly
-                MainContentView(
-                     viewModel: viewModel,
-                     selectedView: selectedView
-                )
-                .layoutPriority(1) // Allow content area to expand
+                /*// --- MAIN CONTENT AREA - TEMPORARILY REPLACED ---
+                Spacer() // Use Spacer to push placeholder text
+                Text("Main Content Placeholder")
+                    .foregroundColor(.orange) // Make it obvious
+                Spacer()
+                // --- END REPLACEMENT ---*/
+                // --- RESTORE MainContentView ---
+                                MainContentView(
+                                     viewModel: viewModel,
+                                     selectedView: selectedView
+                                )
+                                .layoutPriority(1) // Allow content area to expand
+                                // --- END RESTORE ---
 
             } // End Top Level VStack
-            // Apply modifiers to the VStack
             .navigationTitle("MachO Dumper")
-            .navigationBarTitleDisplayMode(.inline)
-            .sheet(isPresented: $showFilePicker) { DocumentPicker { url in viewModel.processURL(url) } }
-            .onChange(of: viewModel.processingUpdateId) { _ in checkSelectedViewValidity() }
+                        .navigationBarTitleDisplayMode(.inline)
+                        .sheet(isPresented: $showFilePicker) { DocumentPicker { url in viewModel.processURL(url) } }
+                        // --- ENSURE ONLY THIS onChange REMAINS for view validity ---
+                        .onChange(of: viewModel.processingUpdateId) { _ in
+                            // Perform all validity checks *after* the processing ID changes
+                            checkSelectedViewValidity()
+                        }
             .onChange(of: viewModel.foundStrings) { _ in // Add onChange for strings
                               if viewModel.foundStrings.isEmpty && selectedView == .strings {
                                   selectedView = .info // Fallback if strings disappear
@@ -107,7 +94,12 @@ struct ContentView: View {
                                   selectedView = .info
                               }
                          }
-
+            /*.onChange(of: viewModel.extractedCategories) { _ in // Add onChange
+                              if viewModel.extractedCategories.isEmpty && selectedView == .categories {
+                                  selectedView = .info
+                              }
+                         }
+                        */
         } // End NavigationView
         // Apply navigationViewStyle *outside* the NavigationView
         .navigationViewStyle(.stack)
@@ -119,32 +111,30 @@ struct ContentView: View {
     // Keep this inside ContentView struct
     private func checkSelectedViewValidity() {
         var needsReset = false
+        guard viewModel.parsedData != nil else {
+            print("checkSelectedViewValidity called but parsedData is nil, skipping checks.")
+                         return
+                    }
         switch selectedView {
-        case .header:
-            if viewModel.generatedHeader == nil { needsReset = true }
-        case .symbols:
-            if viewModel.parsedData?.symbols?.isEmpty ?? true { needsReset = true }
-        case .dyldInfo:
-            if viewModel.parsedDyldInfo == nil { needsReset = true }
-        case .strings: 
-            if viewModel.foundStrings.isEmpty { needsReset = true }
-        case .selectorRefs: // <-- ADDED
-            if viewModel.selectorReferences.isEmpty { needsReset = true }
-        case .funcStarts:
-            if viewModel.functionStarts.isEmpty { needsReset = true }
-        case .exports:
-            if viewModel.parsedDyldInfo == nil || (viewModel.parsedDyldInfo?.exports.isEmpty ?? true) { needsReset = true }
-        case .swiftTypes:
-            if viewModel.extractedSwiftTypes.isEmpty { needsReset = true }
-        case .info, .loadCmds:
-            break // Always valid if parsedData exists
-        }
+                case .header:      if viewModel.generatedHeader == nil { needsReset = true }
+                case .swiftTypes:  if viewModel.extractedSwiftTypes.isEmpty { needsReset = true }
+                case .symbols:     if viewModel.parsedData?.symbols?.isEmpty ?? true { needsReset = true }
+                case .dyldInfo:    if viewModel.parsedDyldInfo == nil { needsReset = true }
+                case .exports:     if viewModel.parsedDyldInfo?.exports.isEmpty ?? true { needsReset = true }
+                case .categories:  if viewModel.extractedCategories.isEmpty { needsReset = true }
+                case .strings:     if viewModel.foundStrings.isEmpty { needsReset = true }
+                case .funcStarts:  if viewModel.functionStarts.isEmpty { needsReset = true }
+                case .selectorRefs:if viewModel.selectorReferences.isEmpty { needsReset = true }
+                case .info, .loadCmds: break // Always valid
+                }
 
-        if needsReset {
-            print("Resetting selected view from \(selectedView) to .info")
-            selectedView = .info
-        }
-    }
+                if needsReset {
+                    print("Resetting selected view from \(selectedView) to .info because its data is unavailable.")
+                    selectedView = .info
+                } else {
+                     print("Selected view \(selectedView) is still valid.")
+                }
+            }
 
 } // --- END ContentView struct --- (Ensure this is the final closing brace for the struct)
 

@@ -26,6 +26,7 @@ struct ViewSelectorView: View {
         if !viewModel.foundStrings.isEmpty { types.append(.strings) }
         if !viewModel.functionStarts.isEmpty { types.append(.funcStarts) }
         if !viewModel.selectorReferences.isEmpty { types.append(.selectorRefs) }
+        if !viewModel.extractedCategories.isEmpty { Text(ContentView.ViewType.categories.rawValue).tag(ContentView.ViewType.categories) }
         return types
     }
 

@@ -25,20 +25,17 @@ class ObjCMetadataExtractor {
             var metadata = ExtractedMetadata()
             metaClassROCache.removeAll()
 
-            try cacheRequiredSections()
-            try extractProtocols(into: &metadata)
-            try extractClasses(into: &metadata)
-            try extractCategories(into: &metadata)
-            try resolveClassLevelData(for: &metadata)
-            try extractSelectorReferences(into: &metadata)
-            mergeCategories(into: &metadata)
+        try cacheRequiredSections()
+                try extractProtocols(into: &metadata)
+                try extractClasses(into: &metadata)
+                try extractCategories(into: &metadata) // Populates metadata.categories
+                try resolveClassLevelData(for: &metadata) // Reads class methods/props for found classes
+                try extractSelectorReferences(into: &metadata)
 
-        print("ℹ️ ObjCMetadataExtractor: Extraction finished. Classes: \(metadata.classes.count), Protocols: \(metadata.protocols.count), Categories: \(metadata.categories.count), SelRefs: \(metadata.selectorReferences.count)")
-                if metadata.classes.isEmpty && metadata.protocols.isEmpty && !didFindObjCSections() {
-                     // If we didn't find *any* primary sections, throw the specific error
-                     // (This check might be better placed earlier)
-                     // throw MachOParseError.noObjectiveCMetadataFound
-                }
+                // mergeCategories(into: &metadata) // <-- COMMENT OUT or modify merge logic later if needed
+
+                // Update final print statement
+                print("ℹ️ ObjCMetadataExtractor: Extraction finished. Classes: \(metadata.classes.count), Protocols: \(metadata.protocols.count), Categories: \(metadata.categories.count), SelRefs: \(metadata.selectorReferences.count)")
                 return metadata
             }
     
@@ -54,22 +51,32 @@ class ObjCMetadataExtractor {
 
     private func cacheRequiredSections() throws {
         let required = [
-            ("__DATA_CONST", "__objc_classlist"), ("__DATA", "__objc_classlist"), // Allow either segment
+            ("__DATA_CONST", "__objc_classlist"), ("__DATA", "__objc_classlist"),
             ("__DATA_CONST", "__objc_protolist"), ("__DATA", "__objc_protolist"),
             ("__DATA_CONST", "__objc_catlist"), ("__DATA", "__objc_catlist"),
-            ("__DATA_CONST", "__objc_selrefs"), ("__DATA", "__objc_selrefs"),
             ("__TEXT", "__objc_classname"),
             ("__TEXT", "__objc_methname"),
             ("__TEXT", "__objc_methtype"),
-            ("__DATA_CONST", "__objc_const"), // Needed for class_ro_t
-             // Add others if needed: __objc_selrefs, __objc_superrefs, __objc_ivar, etc.
+            ("__DATA_CONST", "__objc_const"),
+            ("__DATA_CONST", "__objc_selrefs"), ("__DATA", "__objc_selrefs"),
         ]
-        for (seg, sect) in required {
-                 if let section = parsedData.section(segmentName: seg, sectionName: sect) {
-                     sectionCache["\(seg)/\(sect)"] = section
-                     if sectionCache[sect] == nil { sectionCache[sect] = section }
-                 }
-             }
+        print("  [Debug] cacheRequiredSections: Caching sections...")
+            for (seg, sect) in required {
+                if let section = parsedData.section(segmentName: seg, sectionName: sect) {
+                    sectionCache["\(seg)/\(sect)"] = section
+                    if sectionCache[sect] == nil {
+                         sectionCache[sect] = section
+                         print("    [Debug] cacheRequiredSections: Found \(sect) in \(seg) at offset \(section.command.offset)")
+                    }
+                } else {
+                     // Log if a specific instance (seg/sect) wasn't found, but don't log if alternate was found
+                     if sectionCache[sect] == nil && (required.filter { $0.1 == sect }.count == 1 || required.firstIndex(where: {$0 == (seg, sect)}) == required.lastIndex(where: {$0.1 == sect})) {
+                         // Only log missing if it's the only option or the last option checked for that section name
+                         // print("    [Debug] cacheRequiredSections: Section \(seg)/\(sect) not found.")
+                     }
+                }
+            }
+            print("  [Debug] cacheRequiredSections: Caching complete. Found keys: \(sectionCache.keys.sorted())")
         // --- MODIFIED ERROR CHECK ---
             // Check if *any* core ObjC sections were found. If not, it's likely not an ObjC binary.
             let hasClassList = sectionCache["__objc_classlist"] != nil
@@ -287,6 +294,7 @@ class ObjCMetadataExtractor {
     
     // IMPLEMENTED: Merge Categories
     private func mergeCategories(into metadata: inout ExtractedMetadata) {
+        print("ℹ️ ObjCMetadataExtractor: Merging categories (Current impl requires base class)...")
             for category in metadata.categories {
                 guard let targetClass = metadata.classes[category.className] else { continue }
 
