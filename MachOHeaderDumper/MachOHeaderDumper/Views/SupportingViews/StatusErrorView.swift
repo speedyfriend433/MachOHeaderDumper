@@ -48,7 +48,3 @@ struct StatusErrorView: View {
         .padding(.horizontal)
     }
 }
-
-// Make sure the DemanglerStatus enum and its color property are accessible here
-// If defined in Utils/StatusEnums.swift, import Utils if needed.
-// If defined inside MachOViewModel, this won't work directly. Best to define globally.

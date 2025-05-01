@@ -25,6 +25,7 @@ struct ContentView: View {
         case symbols = "Symbols"
         case dyldInfo = "DyldInfo"
         case exports = "Exports"
+        case selectorRefs = "Sel Refs"
         var id: String { self.rawValue }
     }
 
@@ -90,7 +91,6 @@ struct ContentView: View {
             .navigationTitle("MachO Dumper")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showFilePicker) { DocumentPicker { url in viewModel.processURL(url) } }
-            // Use the single consolidated onChange modifier
             .onChange(of: viewModel.processingUpdateId) { _ in checkSelectedViewValidity() }
             .onChange(of: viewModel.foundStrings) { _ in // Add onChange for strings
                               if viewModel.foundStrings.isEmpty && selectedView == .strings {
@@ -99,6 +99,11 @@ struct ContentView: View {
                          }
             .onChange(of: viewModel.functionStarts) { _ in // Add onChange
                               if viewModel.functionStarts.isEmpty && selectedView == .funcStarts {
+                                  selectedView = .info
+                              }
+                         }
+            .onChange(of: viewModel.selectorReferences) { _ in // Add onChange
+                              if viewModel.selectorReferences.isEmpty && selectedView == .selectorRefs {
                                   selectedView = .info
                               }
                          }
@@ -123,6 +128,8 @@ struct ContentView: View {
             if viewModel.parsedDyldInfo == nil { needsReset = true }
         case .strings: 
             if viewModel.foundStrings.isEmpty { needsReset = true }
+        case .selectorRefs: // <-- ADDED
+            if viewModel.selectorReferences.isEmpty { needsReset = true }
         case .funcStarts:
             if viewModel.functionStarts.isEmpty { needsReset = true }
         case .exports:

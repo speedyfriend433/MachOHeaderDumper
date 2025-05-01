@@ -90,5 +90,21 @@ struct ExtractedCategory {
 struct ExtractedMetadata {
     var classes: [String: ObjCClass] = [:]
     var protocols: [String: ObjCProtocol] = [:]
-    var categories: [ExtractedCategory] = [] // Store parsed categories before merging
+    var categories: [ExtractedCategory] = []
+    var selectorReferences: [SelectorReference] = [] // <-- ADDED
+}
+
+struct SelectorReference: Identifiable, Hashable {
+    let id = UUID()
+    let selectorName: String
+    let referenceAddress: UInt64 // VM Address *of the pointer* in __objc_selrefs
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(selectorName)
+        hasher.combine(referenceAddress)
+    }
+
+    static func == (lhs: SelectorReference, rhs: SelectorReference) -> Bool {
+        lhs.selectorName == rhs.selectorName && lhs.referenceAddress == rhs.referenceAddress
+    }
 }

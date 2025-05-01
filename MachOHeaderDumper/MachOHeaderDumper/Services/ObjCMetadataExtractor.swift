@@ -21,18 +21,33 @@ class ObjCMetadataExtractor {
 
     /// Main function to extract all Objective-C metadata.
     func extract() async throws -> ExtractedMetadata {
+        print("ℹ️ ObjCMetadataExtractor: Starting extraction...")
             var metadata = ExtractedMetadata()
             metaClassROCache.removeAll()
 
             try cacheRequiredSections()
             try extractProtocols(into: &metadata)
-            try extractClasses(into: &metadata) // Reads instance data
+            try extractClasses(into: &metadata)
             try extractCategories(into: &metadata)
-            try resolveClassLevelData(for: &metadata) // Renamed from resolveClassMethods
+            try resolveClassLevelData(for: &metadata)
+            try extractSelectorReferences(into: &metadata)
             mergeCategories(into: &metadata)
 
-            print("Extraction: Found \(metadata.classes.count) classes, \(metadata.protocols.count) protocols, \(metadata.categories.count) categories.")
-            return metadata
+        print("ℹ️ ObjCMetadataExtractor: Extraction finished. Classes: \(metadata.classes.count), Protocols: \(metadata.protocols.count), Categories: \(metadata.categories.count), SelRefs: \(metadata.selectorReferences.count)")
+                if metadata.classes.isEmpty && metadata.protocols.isEmpty && !didFindObjCSections() {
+                     // If we didn't find *any* primary sections, throw the specific error
+                     // (This check might be better placed earlier)
+                     // throw MachOParseError.noObjectiveCMetadataFound
+                }
+                return metadata
+            }
+    
+    // Helper to check if any relevant sections were found
+        private func didFindObjCSections() -> Bool {
+            return sectionCache["__objc_classlist"] != nil ||
+                   sectionCache["__objc_protolist"] != nil ||
+                   sectionCache["__objc_catlist"] != nil ||
+                   sectionCache["__objc_const"] != nil
         }
 
     // MARK: - Section Caching
@@ -42,6 +57,7 @@ class ObjCMetadataExtractor {
             ("__DATA_CONST", "__objc_classlist"), ("__DATA", "__objc_classlist"), // Allow either segment
             ("__DATA_CONST", "__objc_protolist"), ("__DATA", "__objc_protolist"),
             ("__DATA_CONST", "__objc_catlist"), ("__DATA", "__objc_catlist"),
+            ("__DATA_CONST", "__objc_selrefs"), ("__DATA", "__objc_selrefs"),
             ("__TEXT", "__objc_classname"),
             ("__TEXT", "__objc_methname"),
             ("__TEXT", "__objc_methtype"),
@@ -181,6 +197,63 @@ class ObjCMetadataExtractor {
            }
        }
     
+    // --- NEW METHOD: Extract Selector References ---
+        private func extractSelectorReferences(into metadata: inout ExtractedMetadata) throws {
+            // Find section (allow __DATA or __DATA_CONST)
+            guard let selRefsSection = getSection("__objc_selrefs") else {
+                print("ℹ️ ObjCMetadataExtractor: No __objc_selrefs section found.")
+                return // Nothing to parse
+            }
+
+            let sectionFileOffset = UInt64(selRefsSection.command.offset)
+            let sectionVMAddr = selRefsSection.command.addr // Base VM address of the section
+            let sectionSize = selRefsSection.command.size
+            let pointerCount = Int(sectionSize) / POINTER_SIZE
+
+            print("ℹ️ ObjCMetadataExtractor: Parsing __objc_selrefs section (\(pointerCount) potential entries)...")
+
+            for i in 0..<pointerCount {
+                // Address *of the pointer* within the selrefs section
+                let refPtrFileOffset = sectionFileOffset + UInt64(i * POINTER_SIZE)
+                let refPtrVMAddress = sectionVMAddr + UInt64(i * POINTER_SIZE)
+
+                // Ensure read is within bounds
+                guard refPtrFileOffset + UInt64(POINTER_SIZE) <= parsedData.dataRegion.count else {
+                     print("Warning: ObjCMetadataExtractor - Reading selref pointer out of bounds.")
+                     break // Stop if out of bounds
+                }
+
+                // Read the pointer (VM address) stored at this location
+                let targetSelectorNameVMAddr: UInt64 = try parsedData.dataRegion.read(at: Int(refPtrFileOffset))
+
+                // This address points to the actual C string in __objc_methname
+                guard targetSelectorNameVMAddr != 0 else {
+                    // Null pointer, skip
+                    continue
+                }
+
+                // Resolve the target pointer to read the selector name string
+                do {
+                    // Use the existing helper, assuming it handles potential errors
+                    if let selectorName = try readString(atVMAddress: targetSelectorNameVMAddr) {
+                        // Successfully read name, add the reference
+                        metadata.selectorReferences.append(SelectorReference(
+                            selectorName: selectorName,
+                            referenceAddress: refPtrVMAddress // Store address where ref was found
+                        ))
+                    } else {
+                        // readString returned nil (shouldn't happen if pointer non-zero and resolves)
+                        print("Warning: ObjCMetadataExtractor - Failed to read selector name string at resolved address for ref at 0x\(String(refPtrVMAddress, radix: 16))")
+                    }
+                } catch {
+                    // Error resolving pointer or reading string
+                     print("Warning: ObjCMetadataExtractor - Failed to resolve/read selector name for ref at 0x\(String(refPtrVMAddress, radix: 16)): \(error)")
+                     // Continue to the next reference
+                }
+            }
+             print("ℹ️ ObjCMetadataExtractor: Finished parsing __objc_selrefs.")
+        }
+    
     // Renamed and updated to handle class props
         private func resolveClassLevelData(for metadata: inout ExtractedMetadata) throws {
             for (_, cls) in metadata.classes {
@@ -296,29 +369,35 @@ class ObjCMetadataExtractor {
 
         /// Reads RO pointer from class/metaclass pointer
         private func resolveRODataPtr(fromClassPtr classPtr: UInt64) throws -> UInt64 {
+            print("  [Debug] resolveRODataPtr: Attempting for classPtr 0x\(String(classPtr, radix: 16))")
              guard classPtr != 0 else { return 0 }
              // Offset of 'bits' or 'data' field in struct objc_class (typically 0x20)
              let dataPtrOffset = 0x20
-             let dataFieldAddr = classPtr + UInt64(dataPtrOffset)
-             let dataFieldPtrFileOffset = try parser.fileOffset(for: dataFieldAddr, parsedData: parsedData)
-             var classDataPtr: UInt64 = try parsedData.dataRegion.read(at: Int(dataFieldPtrFileOffset))
+             let dataFieldAddr = classPtr + 0x20
+                    let dataFieldPtrFileOffset = try parser.fileOffset(for: dataFieldAddr, parsedData: parsedData)
+                    var classDataPtr: UInt64 = try parsedData.dataRegion.read(at: Int(dataFieldPtrFileOffset))
+                    print("    [Debug] resolveRODataPtr: Read dataFieldPtr = 0x\(String(classDataPtr, radix: 16)) at file offset \(dataFieldPtrFileOffset)")
+                    classDataPtr &= ~UInt64(3) // Mask flags
+                    guard classDataPtr != 0 else { print("    [Debug] resolveRODataPtr: dataFieldPtr masked is NULL"); return 0 }
 
-             // Mask pointer bits if necessary (common mask is ~3 for alignment/flags)
-             classDataPtr &= ~UInt64(3)
-             guard classDataPtr != 0 else { return 0 }
-
-             // Read the pointer to class_ro_t (usually first field in class_rw_t)
-             let roPtrFileOffset = try parser.fileOffset(for: classDataPtr, parsedData: parsedData)
-             let roVMPtr: UInt64 = try parsedData.dataRegion.read(at: Int(roPtrFileOffset))
-             return roVMPtr
-        }
+                    let roPtrFileOffset = try parser.fileOffset(for: classDataPtr, parsedData: parsedData)
+                    let roVMPtr: UInt64 = try parsedData.dataRegion.read(at: Int(roPtrFileOffset))
+                    print("    [Debug] resolveRODataPtr: Resolved roVMPtr = 0x\(String(roVMPtr, radix: 16)) at file offset \(roPtrFileOffset)")
+                    return roVMPtr
+                }
     
     /// Reads instance methods, properties, ivars, adopted protocols from class_ro_t
-       private func readClassInstanceData(roPointer: UInt64, classVMAddress: UInt64) throws -> ObjCClass? {
-           let roFileOffset = try parser.fileOffset(for: roPointer, parsedData: parsedData)
-           let roData: class_ro_t = try parsedData.dataRegion.read(at: Int(roFileOffset))
+    private func readClassInstanceData(roPointer: UInt64, classVMAddress: UInt64) throws -> ObjCClass? {
+            print("  [Debug] readClassInstanceData: Reading RO at 0x\(String(roPointer, radix: 16)) for class 0x\(String(classVMAddress, radix: 16))")
+            let roFileOffset = try parser.fileOffset(for: roPointer, parsedData: parsedData)
+            let roData: class_ro_t = try parsedData.dataRegion.read(at: Int(roFileOffset))
+            print("    [Debug] readClassInstanceData: Read class_ro_t. Flags: \(roData.flags), NamePtr: 0x\(String(roData.name, radix: 16))")
 
-           let name = try readString(atVMAddress: roData.name) ?? "<NoName>"
+            guard let name = try readString(atVMAddress: roData.name) else {
+                print("    [Debug] readClassInstanceData: FAILED to read class name.")
+                return nil
+            }
+            print("    [Debug] readClassInstanceData: Class Name = \(name)")
 
            // Resolve superclass name immediately if possible
            var superclassName: String? = nil
@@ -333,19 +412,18 @@ class ObjCMetadataExtractor {
            let cls = ObjCClass(name: name, vmAddress: classVMAddress, superclassName: superclassName)
 
            // Instance Methods from RO
-           cls.instanceMethods = try readMethodList(atVMAddress: roData.baseMethodList, isClassMethod: false)
+            print("      [Debug] Reading instance methods from 0x\(String(roData.baseMethodList, radix: 16))")
+                cls.instanceMethods = try readMethodList(atVMAddress: roData.baseMethodList, isClassMethod: false)
+                print("      [Debug] Reading properties from 0x\(String(roData.baseProperties, radix: 16))")
+                cls.properties = try readPropertyList(atVMAddress: roData.baseProperties)
+                print("      [Debug] Reading protocols from 0x\(String(roData.baseProtocols, radix: 16))")
+                cls.adoptedProtocols = try readProtocolListNames(atVMAddress: roData.baseProtocols)
+                print("      [Debug] Reading ivars from 0x\(String(roData.ivars, radix: 16))")
+                cls.ivars = try readIVarList(atVMAddress: roData.ivars)
 
-           // Properties from RO
-           cls.properties = try readPropertyList(atVMAddress: roData.baseProperties)
-
-           // Protocols from RO
-           cls.adoptedProtocols = try readProtocolListNames(atVMAddress: roData.baseProtocols)
-
-           // IMPLEMENTED: IVars from RO
-           cls.ivars = try readIVarList(atVMAddress: roData.ivars)
-
-           return cls
-       }
+                print("    [Debug] readClassInstanceData: Finished reading instance data for \(name). Methods: \(cls.instanceMethods.count), Props: \(cls.properties.count), Protos: \(cls.adoptedProtocols.count), IVars: \(cls.ivars.count)")
+                return cls
+            }
     
     private func readClass(roPointer: UInt64, classVMAddress: UInt64) throws -> ObjCClass? {
         let roFileOffset = try parser.fileOffset(for: roPointer, parsedData: parsedData)
@@ -405,35 +483,41 @@ class ObjCMetadataExtractor {
 
     // Generic list reader for methods
     private func readMethodList(atVMAddress listVMPtr: UInt64, isClassMethod: Bool) throws -> [ObjCMethod] {
-        guard listVMPtr != 0 else { return [] }
+             guard listVMPtr != 0 else { return [] }
+             print("      [Debug] readMethodList: Reading list at 0x\(String(listVMPtr, radix: 16))")
 
         let listFileOffset = try parser.fileOffset(for: listVMPtr, parsedData: parsedData)
-        let header: objc_list_header_t = try parsedData.dataRegion.read(at: Int(listFileOffset))
-        let count = Int(header.countValue)
-        // Ensure entsize matches expected method_t size. Could use elementSize instead if available/reliable.
-        let elementSize = MemoryLayout<method_t>.size
+                 let header: objc_list_header_t = try parsedData.dataRegion.read(at: Int(listFileOffset))
+                 let count = Int(header.countValue)
+                 let elementSize = Int(header.elementSize) // Use actual entsize
+                 print("        [Debug] readMethodList: Count=\(count), EntSize=\(elementSize)")
+                 // Sanity check elementSize
+                 guard elementSize >= MemoryLayout<method_t>.stride else {
+                      print("        [Debug] readMethodList: ERROR - entsize (\(elementSize)) smaller than method_t stride (\(MemoryLayout<method_t>.stride)). Aborting list read.")
+                      return []
+                 }
         var methods: [ObjCMethod] = []
-        methods.reserveCapacity(count)
+                 var currentMethodFileOffset = listFileOffset + UInt64(MemoryLayout<objc_list_header_t>.size)
 
-        var currentMethodOffset = listFileOffset + UInt64(MemoryLayout<objc_list_header_t>.size)
+                 for i in 0..<count {
+                     print("        [Debug] readMethodList: Reading method #\(i+1) at file offset \(currentMethodFileOffset)")
+                     // Bounds check before reading method_t
+                     guard currentMethodFileOffset + UInt64(elementSize) <= parsedData.dataRegion.count else {
+                         print("        [Debug] readMethodList: ERROR - Read out of bounds for method #\(i+1). Aborting list read.")
+                         break
+                     }
+                     let methodData: method_t = try parsedData.dataRegion.read(at: Int(currentMethodFileOffset))
 
-        for _ in 0..<count {
-            let methodData: method_t = try parsedData.dataRegion.read(at: Int(currentMethodOffset))
+                     let name = try readString(atVMAddress: methodData.name) ?? "?SEL? (\(methodData.name))"
+                     let types = try readString(atVMAddress: methodData.types) ?? "? (\(methodData.types))"
+                     print("          [Debug] readMethodList: Name='\(name)', Types='\(types)', Imp=0x\(String(methodData.imp, radix: 16))")
 
-            // Resolve selector name and type encoding strings
-            let name = try readString(atVMAddress: methodData.name) ?? "?SEL?"
-            let types = try readString(atVMAddress: methodData.types) ?? "?"
-
-            methods.append(ObjCMethod(
-                name: name,
-                typeEncoding: types,
-                implementationAddress: methodData.imp, // Store the IMP VM address
-                isClassMethod: isClassMethod
-            ))
-            currentMethodOffset += UInt64(elementSize)
-        }
-        return methods
-    }
+                     methods.append(ObjCMethod(name: name, typeEncoding: types, implementationAddress: methodData.imp, isClassMethod: isClassMethod))
+                     currentMethodFileOffset += UInt64(elementSize) // Increment by actual entsize
+                 }
+                 print("      [Debug] readMethodList: Finished list at 0x\(String(listVMPtr, radix: 16)). Found \(methods.count) methods.")
+                 return methods
+             }
 
     // Generic list reader for properties
     private func readPropertyList(atVMAddress listVMPtr: UInt64) throws -> [ObjCProperty] {
@@ -559,14 +643,24 @@ class ObjCMetadataExtractor {
 
     // Helper to read CString given a VM address pointer
     private func readString(atVMAddress vmAddress: UInt64) throws -> String? {
-        guard vmAddress != 0 else { return nil }
-        let fileOffset = try parser.fileOffset(for: vmAddress, parsedData: parsedData)
-        // Make sure offset is within the bounds of the data region
-        guard fileOffset < parsedData.dataRegion.count else {
-             throw MachOParseError.stringReadOutOfBounds(offset: fileOffset)
+            guard vmAddress != 0 else { return nil }
+            print("        [Debug] readString: Attempting resolve for VMAddr 0x\(String(vmAddress, radix: 16))")
+            let fileOffset = try parser.fileOffset(for: vmAddress, parsedData: parsedData)
+            print("          [Debug] readString: Resolved to FileOffset \(fileOffset)")
+            guard fileOffset < parsedData.dataRegion.count else {
+                 print("          [Debug] readString: ERROR - Resolved file offset \(fileOffset) is out of bounds (\(parsedData.dataRegion.count)).")
+                 throw MachOParseError.stringReadOutOfBounds(offset: fileOffset)
+            }
+            // Add try/catch around readCString itself
+            do {
+               let str = try parsedData.dataRegion.readCString(at: Int(fileOffset))
+               print("          [Debug] readString: Success = '\(str.prefix(50))'") // Log prefix
+               return str
+            } catch {
+                 print("          [Debug] readString: ERROR - readCString failed at offset \(fileOffset): \(error)")
+                 throw error // Rethrow
+            }
         }
-        return try parsedData.dataRegion.readCString(at: Int(fileOffset))
-    }
 
 // Helper to read class name directly from class pointer
     private func readClassNameFromClassPtr(_ classPtr: UInt64) throws -> String? {

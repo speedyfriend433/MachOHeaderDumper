@@ -400,31 +400,92 @@ class MachOParser {
             return symbols
         }
 
-    // MARK: - Pointer Resolution
-    // fileOffset() remains the same...
-     func fileOffset(for vmAddress: UInt64, parsedData: ParsedMachOData) throws -> UInt64 {
-         for segment in parsedData.segments {
-             if vmAddress >= segment.command.vmaddr && vmAddress < segment.command.vmaddr + segment.command.vmsize {
-                 for section in segment.sections {
-                     if vmAddress >= section.command.addr && vmAddress < section.command.addr + section.command.size {
-                         let offsetInSection = vmAddress - section.command.addr
-                         guard offsetInSection < section.command.size else {
-                             throw MachOParseError.addressResolutionFailed(vmaddr: vmAddress)
+    // MARK: - Pointer Resolution (Revised Relative Logic)
+
+        func fileOffset(for vmAddress: UInt64, parsedData: ParsedMachOData) throws -> UInt64 {
+            let imageBase = parsedData.baseAddress
+            // Calculate the target address's offset relative to the image base
+            // Handle potential underflow if vmAddress < imageBase (unlikely for valid pointers)
+            guard vmAddress >= imageBase else {
+                 print("      [Debug] fileOffset: ERROR - VM Address 0x\(String(vmAddress, radix: 16)) is less than image base 0x\(String(imageBase, radix: 16)).")
+                 throw MachOParseError.addressResolutionFailed(vmaddr: vmAddress)
+            }
+            let relativeTargetOffset = vmAddress - imageBase
+            print("      [Debug] fileOffset: Resolving VM 0x\(String(vmAddress, radix: 16)) (Relative Offset: 0x\(String(relativeTargetOffset, radix: 16)), Base: 0x\(String(imageBase, radix: 16)))")
+
+
+            for segment in parsedData.segments {
+                guard segment.command.vmaddr >= imageBase else {
+                     // Skip segments potentially loaded below the main image base? Unusual.
+                     print("        [Debug] fileOffset: Skipping segment \(segment.name) with vmaddr 0x\(String(segment.command.vmaddr, radix: 16)) below image base.")
+                     continue
+                }
+                // Calculate segment's relative start and end offsets
+                let relativeSegStart = segment.command.vmaddr - imageBase
+                let segSize = segment.command.vmsize // Use VM size for range check
+                let relativeSegEnd = relativeSegStart + segSize
+
+                // Check if target relative offset falls within the segment's relative VM range
+                if relativeTargetOffset >= relativeSegStart && relativeTargetOffset < relativeSegEnd {
+                    print("        [Debug] fileOffset: Relative offset 0x\(String(relativeTargetOffset, radix: 16)) is within segment \(segment.name) [Rel: 0x\(String(relativeSegStart, radix: 16)) - 0x\(String(relativeSegEnd, radix: 16))]")
+
+                    // Check sections within this segment
+                    for section in segment.sections {
+                         guard section.command.addr >= imageBase else { continue } // Skip sections below base?
+
+                         let relativeSectStart = section.command.addr - imageBase
+                         let sectSize = section.command.size // Use section VM size for range check
+                         let relativeSectEnd = relativeSectStart + sectSize
+
+                         if relativeTargetOffset >= relativeSectStart && relativeTargetOffset < relativeSectEnd {
+                             // Found the section containing the relative offset
+                             let offsetWithinSection = relativeTargetOffset - relativeSectStart
+
+                             // Calculate file offset using the section's base file offset
+                             let fileOffset = UInt64(section.command.offset) + offsetWithinSection
+
+                             print("        [Debug] fileOffset: Found in section \(section.name) [Rel: 0x\(String(relativeSectStart, radix: 16)) - 0x\(String(relativeSectEnd, radix: 16))]. Offset within section: \(offsetWithinSection). Final File Offset: \(fileOffset)")
+
+                             // Sanity check final file offset against the *section's* file size (not VM size)
+                             // Ensure the offset points within the part mapped from the file
+                             guard offsetWithinSection < section.command.size else { // Re-check this condition logic - should maybe use section.command.filesize if different? Often size == filesize. Let's stick to size for now.
+                                  print("        [Debug] fileOffset: WARNING - Offset within section (\(offsetWithinSection)) exceeds section size (\(section.command.size)) for \(section.name). Might be VM padding.")
+                                  // Allow this for now, but might indicate an issue later if reading fails
+                                  // throw MachOParseError.addressResolutionFailed(vmaddr: vmAddress)
+                                 throw MachOParseError.addressResolutionFailed(vmaddr: vmAddress)}
+                             // Sanity check final file offset against total dataRegion size
+                             guard fileOffset < parsedData.dataRegion.count else {
+                                 print("        [Debug] fileOffset: ERROR - Calculated file offset \(fileOffset) exceeds data region size \(parsedData.dataRegion.count)")
+                                 throw MachOParseError.addressResolutionFailed(vmaddr: vmAddress)
+                             }
+                             return fileOffset
                          }
-                         let fileOffset = UInt64(section.command.offset) + offsetInSection
-                         return fileOffset
+                    }
+
+                    // Address is in the segment but not in any specific section (e.g., header padding)
+                    print("        [Debug] fileOffset: Relative offset 0x\(String(relativeTargetOffset, radix: 16)) in segment \(segment.name) but not in a specific section.")
+
+                    // Can we map it relative to the segment's file offset? Only if it falls within the segment's *file* size.
+                     let offsetWithinSegmentFile = relativeTargetOffset - relativeSegStart // Offset from start of segment's VM range
+                     guard offsetWithinSegmentFile < segment.command.filesize else {
+                         print("        [Debug] fileOffset: ERROR - Offset within segment (\(offsetWithinSegmentFile)) exceeds segment's file size (\(segment.command.filesize)) for \(segment.name). Cannot map to file offset.")
+                         throw MachOParseError.addressResolutionFailed(vmaddr: vmAddress)
                      }
-                 }
-                  let offsetInSegment = vmAddress - segment.command.vmaddr
-                  guard offsetInSegment < segment.command.filesize else {
-                      throw MachOParseError.addressResolutionFailed(vmaddr: vmAddress)
-                  }
-                  let fileOffset = segment.command.fileoff + offsetInSegment
-                  return fileOffset
-             }
-         }
-         throw MachOParseError.addressResolutionFailed(vmaddr: vmAddress)
-     }
-} // End class MachOParser
 
+                     let fileOffset = segment.command.fileoff + offsetWithinSegmentFile
+                     print("        [Debug] fileOffset: Mapping relative to segment start. Final File Offset: \(fileOffset)")
 
+                     // Sanity check final file offset
+                     guard fileOffset < parsedData.dataRegion.count else {
+                         print("        [Debug] fileOffset: ERROR - Calculated segment-relative file offset \(fileOffset) exceeds data region size \(parsedData.dataRegion.count)")
+                         throw MachOParseError.addressResolutionFailed(vmaddr: vmAddress)
+                     }
+                     return fileOffset
+                } // End if target in segment range
+            } // End segment loop
+
+            // Address was not found in any segment's VM range using relative offsets
+            print("      [Debug] fileOffset: ERROR - Relative Offset 0x\(String(relativeTargetOffset, radix: 16)) (VM: 0x\(String(vmAddress, radix: 16))) not found in any segment.")
+            throw MachOParseError.addressResolutionFailed(vmaddr: vmAddress)
+        }
+    }

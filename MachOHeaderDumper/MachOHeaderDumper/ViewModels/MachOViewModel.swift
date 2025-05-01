@@ -30,6 +30,7 @@ class MachOViewModel: ObservableObject {
     @Published var demanglerStatus: DemanglerStatus = .idle
     @Published var foundStrings: [FoundString] = []
     @Published var functionStarts: [FunctionStart] = []
+    @Published var selectorReferences: [SelectorReference] = []
 
     private var currentParser: MachOParser?
 
@@ -49,6 +50,7 @@ class MachOViewModel: ObservableObject {
         self.functionStarts = []
         self.statusMessage = "Processing \(url.lastPathComponent)..."
         self.currentParser = nil
+        self.selectorReferences = []
 
         Task.detached(priority: .userInitiated) {
             // Local task variables
@@ -202,6 +204,7 @@ class MachOViewModel: ObservableObject {
                             }
                             self.extractedClasses = finalClasses.sorted { $0.name < $1.name }
                             self.extractedProtocols = finalProtocols.sorted { $0.name < $1.name }
+                            self.selectorReferences = taskObjCMetaResult?.selectorReferences ?? []
 
                             self.generatedHeader = taskHeaderTextResult // Assign header
                             self.demanglerStatus = taskDemanglerStatus // Assign final demangler status
@@ -252,8 +255,9 @@ class MachOViewModel: ObservableObject {
                                 }
                                  if !self.foundStrings.isEmpty { finalStatus += " Found \(self.foundStrings.count) strings." } // <-- ADD String Count
                                  if !self.functionStarts.isEmpty { finalStatus += " Found \(self.functionStarts.count) func starts." } // <-- ADD Count
-                                                     self.statusMessage = finalStatus.contains("Found") ? finalStatus : "Processing complete."
-                                                 }
+                                 if !self.selectorReferences.isEmpty { finalStatus += " Found \(self.selectorReferences.count) sel refs." } // <-- ADD Count
+                                                      self.statusMessage = finalStatus.contains("Found") ? finalStatus : "Processing complete."
+                                                  }
 
                             // --- Trigger UI update via counter ---
                             // Do this LAST after all state is set
