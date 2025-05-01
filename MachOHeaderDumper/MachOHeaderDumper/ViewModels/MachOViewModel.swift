@@ -28,6 +28,7 @@ class MachOViewModel: ObservableObject {
     @Published var generatedHeader: String?
     @Published var processingUpdateId = UUID()
     @Published var demanglerStatus: DemanglerStatus = .idle
+    @Published var foundStrings: [FoundString] = []
 
     private var currentParser: MachOParser?
 
@@ -43,6 +44,7 @@ class MachOViewModel: ObservableObject {
         self.extractedSwiftTypes = []
         self.generatedHeader = nil
         self.demanglerStatus = .idle
+        self.foundStrings = []
         self.statusMessage = "Processing \(url.lastPathComponent)..."
         self.currentParser = nil
 
@@ -54,6 +56,7 @@ class MachOViewModel: ObservableObject {
             var taskSwiftMetaResult: ExtractedSwiftMetadata? = nil
             var taskObjCMetaResult: ExtractedMetadata? = nil
             var taskHeaderTextResult: String? = nil
+            var taskFoundStringsResult: [FoundString]? = nil
             var taskErrorResult: Error? = nil
             var taskObjCNotFoundErr: MachOParseError? = nil
             var taskDemanglerFunc: DynamicSymbolLookup.SwiftDemangleFunc? = nil
@@ -78,6 +81,13 @@ class MachOViewModel: ObservableObject {
                     if parsedResult.isEncrypted { print("⚠️ Binary is marked as encrypted.") }
                 }
 
+                // --- Step 1.1 (NEW): Scan for Strings ---
+                                // Can run concurrently or sequentially. Let's do it sequentially for now.
+                                 await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Scanning strings..." }
+                                // Use static scanner method
+                                taskFoundStringsResult = StringScanner.scanForStrings(in: parsedResult) // Assign to local var
+                                print("✅ Scanned for strings.")
+                
                 // --- Step 1.3: Lookup Demangler ---
                 let lookupResult = DynamicSymbolLookup.getSwiftDemangleFunctionPointer(forBinaryPath: binaryURL.path)
                 taskDemanglerFunc = lookupResult.function
@@ -158,6 +168,7 @@ class MachOViewModel: ObservableObject {
                             // Assign all results collected in background to @Published properties FIRST
                             self.currentParser = taskParser
                             self.parsedData = taskParsedDataResult
+                            self.foundStrings = taskFoundStringsResult ?? []
                             self.parsedDyldInfo = taskDyldInfoResult
                             self.extractedSwiftTypes = taskSwiftMetaResult?.types ?? [] // Assign Swift types
 
@@ -218,8 +229,9 @@ class MachOViewModel: ObservableObject {
                                 } else if taskSwiftMetaResult != nil { // Check if Swift extraction ran
                                      finalStatus += " No Swift types found."
                                 }
-                                self.statusMessage = finalStatus.contains("Found") ? finalStatus : "Processing complete. No specific data extracted."
-                            }
+                                 if !self.foundStrings.isEmpty { finalStatus += " Found \(self.foundStrings.count) strings." } // <-- ADD String Count
+                                                      self.statusMessage = finalStatus.contains("Found") ? finalStatus : "Processing complete."
+                                                  }
 
                             // --- Trigger UI update via counter ---
                             // Do this LAST after all state is set

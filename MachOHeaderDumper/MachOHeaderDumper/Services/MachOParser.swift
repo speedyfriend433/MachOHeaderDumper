@@ -317,7 +317,8 @@ class MachOParser {
                     symbols: symbols,
                     dynamicSymbolInfo: dynamicSymbolInfo,
                     loadCommands: parsedCommands,
-                    dyldInfo: nil // <-- ADDED: Initialize as nil here
+                    dyldInfo: nil,
+                    foundStrings: nil // <-- ADDED: Initialize as nil here
                 )
             }
     

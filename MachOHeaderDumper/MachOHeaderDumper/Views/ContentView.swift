@@ -20,6 +20,7 @@ struct ContentView: View {
         case swiftTypes = "Swift Types"
         case info = "Info"
         case loadCmds = "Load Cmds"
+        case strings = "Strings"
         case symbols = "Symbols"
         case dyldInfo = "DyldInfo"
         case exports = "Exports"
@@ -90,6 +91,11 @@ struct ContentView: View {
             .sheet(isPresented: $showFilePicker) { DocumentPicker { url in viewModel.processURL(url) } }
             // Use the single consolidated onChange modifier
             .onChange(of: viewModel.processingUpdateId) { _ in checkSelectedViewValidity() }
+            .onChange(of: viewModel.foundStrings) { _ in // Add onChange for strings
+                              if viewModel.foundStrings.isEmpty && selectedView == .strings {
+                                  selectedView = .info // Fallback if strings disappear
+                              }
+                         }
 
         } // End NavigationView
         // Apply navigationViewStyle *outside* the NavigationView
@@ -109,6 +115,8 @@ struct ContentView: View {
             if viewModel.parsedData?.symbols?.isEmpty ?? true { needsReset = true }
         case .dyldInfo:
             if viewModel.parsedDyldInfo == nil { needsReset = true }
+        case .strings: 
+            if viewModel.foundStrings.isEmpty { needsReset = true }
         case .exports:
             if viewModel.parsedDyldInfo == nil || (viewModel.parsedDyldInfo?.exports.isEmpty ?? true) { needsReset = true }
         case .swiftTypes:

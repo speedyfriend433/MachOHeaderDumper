@@ -138,7 +138,8 @@ struct ParsedMachOData {
 
     // --- Added ---
     let loadCommands: [ParsedLoadCommand]
-        let dyldInfo: ParsedDyldInfo? // Store the fully parsed dyld info// Store all parsed load commands
+    let dyldInfo: ParsedDyldInfo? // Store the fully parsed dyld info// Store all parsed load commands
+    let foundStrings: [FoundString]?
 
     // --- Convenience Accessors ---
     // Get segments easily from load commands
