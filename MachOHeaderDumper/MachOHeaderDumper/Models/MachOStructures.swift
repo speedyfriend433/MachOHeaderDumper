@@ -13,6 +13,15 @@ import MachO // Attempt to use system headers first
 typealias cpu_type_t = Int32
 typealias cpu_subtype_t = Int32
 typealias vm_prot_t = Int32
+
+// LC_MAIN command structure
+struct entry_point_command {
+    let cmd: UInt32       // LC_MAIN
+    let cmdsize: UInt32   // sizeof(entry_point_command)
+    let entryoff: UInt64  // file offset of main() -> Note: This is offset to the *start* code, not necessarily main() symbol
+    let stacksize: UInt64 // if not zero, initial stack size
+}
+
 // --- Updated ParsedLoadCommand Enum ---
 enum ParsedLoadCommand {
     case segment64(segment_command_64, [ParsedSection])
@@ -26,7 +35,7 @@ enum ParsedLoadCommand {
         case sourceVersion(source_version_command)
         case versionMin(version_min_command, String)
         case buildVersion(build_version_command)
-        case main
+        case main(entry_point_command)
         case functionStarts(linkedit_data_command)
         case dataInCode(linkedit_data_command)
         case codeSignature(linkedit_data_command)
@@ -49,7 +58,7 @@ enum ParsedLoadCommand {
                   case .sourceVersion(let cmd): return "LC_SOURCE_VERSION (\(formatVersionPacked64(cmd.version)))"
                   case .versionMin(_, let platform): return "LC_VERSION_MIN_\(platform)"
                   case .buildVersion(let cmd): return "LC_BUILD_VERSION (Plat: \(platformToString(cmd.platform)), MinOS: \(formatVersionPacked32(cmd.minos)))"
-                  case .main: return "LC_MAIN"
+                  case .main(let cmd): return "LC_MAIN (EntryOff: \(cmd.entryoff), StackSize: \(cmd.stacksize))"
                   case .functionStarts: return "LC_FUNCTION_STARTS"
                   case .dataInCode: return "LC_DATA_IN_CODE"
                   case .codeSignature: return "LC_CODE_SIGNATURE"
@@ -191,7 +200,7 @@ let LC_SOURCE_VERSION: UInt32 = 0x2A // Added
 let LC_SEGMENT_64: UInt32 = 0x19
 let LC_ENCRYPTION_INFO_64: UInt32 = 0x2C
 let LC_CODE_SIGNATURE: UInt32 = 0x1d // Added
-let LC_MAIN: UInt32 = 0x28 | LC_REQ_DYLD
+let LC_MAIN: UInt32 = 0x28 | 0x80000000 // LC_REQ_DYLD
 let LC_DATA_IN_CODE: UInt32 = 0x29 // Added
 let LC_FUNCTION_STARTS: UInt32 = 0x26 // Added
 let LC_DYLD_INFO_ONLY: UInt32 = 0x22 | LC_REQ_DYLD // Added (Structure defined later)

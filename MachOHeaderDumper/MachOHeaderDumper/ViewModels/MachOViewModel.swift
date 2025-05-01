@@ -5,7 +5,7 @@
 //  Created by 이지안 on 4/30/25.
 //
 
-// File: MachOViewModel.swift (Add Update Counter)
+// File: ViewModels/MachOViewModel.swift (Corrected Final Status Logic)
 
 import Foundation
 import SwiftUI
@@ -26,8 +26,6 @@ class MachOViewModel: ObservableObject {
     @Published var extractedProtocols: [ObjCProtocol] = []
     @Published var extractedSwiftTypes: [SwiftTypeInfo] = []
     @Published var generatedHeader: String?
-
-    // --- ADDED: Counter to trigger consolidated onChange ---
     @Published var processingUpdateId = UUID()
 
     private var currentParser: MachOParser?
@@ -51,8 +49,8 @@ class MachOViewModel: ObservableObject {
             var taskParser: MachOParser? = nil
             var taskParsedDataResult: ParsedMachOData? = nil
             var taskDyldInfoResult: ParsedDyldInfo? = nil
-            var taskSwiftMetaResult: ExtractedSwiftMetadata? = nil // Renamed for clarity
-            var taskObjCMetaResult: ExtractedMetadata? = nil // Renamed for clarity
+            var taskSwiftMetaResult: ExtractedSwiftMetadata? = nil
+            var taskObjCMetaResult: ExtractedMetadata? = nil
             var taskHeaderTextResult: String? = nil
             var taskErrorResult: Error? = nil
             var taskObjCNotFoundErr: MachOParseError? = nil
@@ -68,61 +66,59 @@ class MachOViewModel: ObservableObject {
                 taskParsedDataResult = try await Task { try parser.parse() }.value
                 guard let parsedResult = taskParsedDataResult else { throw MachOParseError.mmapFailed(error: "Parsing returned nil data") }
 
-                // Update status and store parser on MainActor
+                // Update Status on MainActor (intermediate)
                 await MainActor.run {
-                    self.parsedData = parsedResult
-                    self.currentParser = parser // Store after successful parse
+                    // Only update parser ref and status here, wait for final update for parsedData
+                    self.currentParser = parser
                     self.statusMessage = self.generateSummary(for: parsedResult) + " Parsing dyld info..."
                     print("✅ Successfully parsed: \(binaryURL.lastPathComponent)")
                     if parsedResult.isEncrypted { print("⚠️ Binary is marked as encrypted.") }
                 }
 
+
                 // --- Step 1.5: Parse Dyld Info ---
-                // Re-get parser instance safely on background if needed, or assume it's valid
-                // For simplicity, assume currentParser is valid if we reached here
                 guard let currentParser = taskParser else { throw MachOParseError.mmapFailed(error: "Parser became nil unexpectedly") }
                 do {
                     let dyldParser = try DyldInfoParser(parsedData: parsedResult)
                     taskDyldInfoResult = try dyldParser.parseAll()
                     print("✅ Successfully parsed dyld binding info.")
                 } catch let error as DyldInfoParseError where error == .missingDyldInfoCommand {
-                     print("ℹ️ Dyld info command not found, skipping binding analysis.")
+                     print("ℹ️ Dyld info command not found.")
                 } catch {
                      print("❌ Error parsing dyld binding info: \(error)")
                 }
-                // Update status (dispatch back to main)
-                await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Extracting Swift..." }
+                 // Update Status on MainActor (intermediate)
+                 await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Extracting Swift..." }
+
 
                 // --- Step 2a: Attempt Swift Extraction ---
                 do {
                     let swiftExtractor = SwiftMetadataExtractor(parsedData: parsedResult, parser: currentParser)
-                    taskSwiftMetaResult = try swiftExtractor.extract() // Assign to local task variable
+                    taskSwiftMetaResult = try swiftExtractor.extract()
                     print("✅ Extracted Swift metadata (\(taskSwiftMetaResult?.types.count ?? 0) types).")
                 } catch {
                     print("⚠️ Warning: Swift metadata extraction failed: \(error)")
                 }
-                 // Update status (dispatch back to main)
-                await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Extracting ObjC..." }
+                 // Update Status on MainActor (intermediate)
+                 await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Extracting ObjC..." }
 
 
                 // --- Step 2b: Attempt ObjC Extraction ---
                 do {
                     let extractor = ObjCMetadataExtractor(parsedData: parsedResult, parser: currentParser)
-                    taskObjCMetaResult = try await extractor.extract() // Assign to local task variable
+                    taskObjCMetaResult = try await extractor.extract()
                     print("✅ Successfully extracted ObjC metadata.")
                 } catch let error as MachOParseError where error == .noObjectiveCMetadataFound {
                     print("ℹ️ No Objective-C metadata found.")
-                    taskObjCNotFoundErr = error // Store specific error locally
-                } catch {
-                    // Rethrow other critical ObjC extraction errors
-                    throw error
-                }
+                    taskObjCNotFoundErr = error
+                } catch { throw error }
+
 
                 // --- Step 3: Generate Header (ObjC only for now) ---
                 if let validObjCMeta = taskObjCMetaResult {
                     let headerGenerator = HeaderGenerator(metadata: validObjCMeta)
                     let includeIvars = await MainActor.run { self.showIvarsInHeader }
-                    taskHeaderTextResult = try await headerGenerator.generateHeader(includeIvarsInHeader: includeIvars) // Assign to local task variable
+                    taskHeaderTextResult = try await headerGenerator.generateHeader(includeIvarsInHeader: includeIvars)
                     print("✅ Successfully generated ObjC header.")
                 }
 
@@ -132,68 +128,74 @@ class MachOViewModel: ObservableObject {
             }
 
             // --- Final Update on MainActor ---
-            await MainActor.run {
-                // Assign results from local task variables to published properties
-                // self.currentParser is already set if parse succeeded
-                self.parsedData = taskParsedDataResult
-                self.parsedDyldInfo = taskDyldInfoResult
-                // FIX: Correctly reference taskSwiftMetaResult
-                self.extractedSwiftTypes = taskSwiftMetaResult?.types ?? []
-                // FIX: Correctly handle optional Values collection and reference taskObjCMetaResult
-                // FIX: Use map to get array from optional dictionary values
-                    let classesArray: [ObjCClass] = taskObjCMetaResult?.classes.values.map { $0 } ?? []
-                    self.extractedClasses = classesArray.sorted { $0.name < $1.name }
+                        await MainActor.run {
+                            // Assign results from local task variables to published properties
+                            self.currentParser = taskParser
+                            self.parsedData = taskParsedDataResult
+                            self.parsedDyldInfo = taskDyldInfoResult
+                            self.extractedSwiftTypes = taskSwiftMetaResult?.types ?? []
 
-                    let protocolsArray: [ObjCProtocol] = taskObjCMetaResult?.protocols.values.map { $0 } ?? []
-                    self.extractedProtocols = protocolsArray.sorted { $0.name < $1.name }
-                self.generatedHeader = taskHeaderTextResult
+                            // ---- MOST EXPLICIT WAY TO HANDLE OBJ-C RESULTS ----
+                            var finalClasses: [ObjCClass] = []
+                            var finalProtocols: [ObjCProtocol] = []
 
-                self.isLoading = false // Finish loading
-                // --- ADDED: Increment update counter ---
-                                // This signals that all data updates are complete for this run
-                                self.processingUpdateId = UUID()
+                            if let objcMeta = taskObjCMetaResult {
+                                // If we have metadata results, explicitly create Arrays from the values
+                                finalClasses = Array(objcMeta.classes.values)
+                                finalProtocols = Array(objcMeta.protocols.values)
+                            }
+                            // Assign the definitely-typed arrays and sort them
+                            self.extractedClasses = finalClasses.sorted { $0.name < $1.name }
+                            self.extractedProtocols = finalProtocols.sorted { $0.name < $1.name }
+                            // ---- END EXPLICIT HANDLING ----
 
-                // Determine final status and error messages
+
+                            self.generatedHeader = taskHeaderTextResult
+                            self.isLoading = false // Finish loading
+
+                // Set final status and error messages based on outcomes
                 if let error = taskErrorResult {
+                    // Fatal error occurred
                     self.errorMessage = "Error: \(error.localizedDescription)"
                     self.statusMessage = "Error processing file."
-                    // Clear parsedData only if the initial parse failed
+                    // Clear data if a fatal error occurred during parsing itself
                     if taskParsedDataResult == nil { self.parsedData = nil }
 
-                } else if let objcError = taskObjCNotFoundErr { // FIX: Reference taskObjCNotFoundErr correctly
+                } else if let objcError = taskObjCNotFoundErr {
+                     // Only non-fatal "No ObjC Meta" occurred
                      self.errorMessage = objcError.localizedDescription
-                     // Use non-optional self.parsedData as parsing must have succeeded to reach here
-                     var finalStatus = self.generateSummary(for: self.parsedData!)
-                     finalStatus += " No ObjC metadata."
-                     // FIX: Correctly reference taskSwiftMetaResult for Swift count
-                     if let swiftMeta = taskSwiftMetaResult, !swiftMeta.types.isEmpty {
-                         finalStatus += " Found \(swiftMeta.types.count) Swift types."
-                     } else if taskSwiftMetaResult != nil { // Check if Swift extraction ran but found none
+                     // Base status on the successfully parsed data
+                     guard let pd = self.parsedData else {
+                          self.statusMessage = "Error: State inconsistency."; return // Should not happen
+                     }
+                     var finalStatus = self.generateSummary(for: pd) + " No ObjC metadata."
+                     // Check the already updated published property for Swift types
+                     if !self.extractedSwiftTypes.isEmpty {
+                         finalStatus += " Found \(self.extractedSwiftTypes.count) Swift types."
+                     } else if taskSwiftMetaResult != nil { // Check if Swift extraction ran
                          finalStatus += " No Swift types found."
                      }
                      self.statusMessage = finalStatus
 
                  } else {
-                    // Success path
-                    self.errorMessage = nil
-                    var finalStatus = self.generateSummary(for: self.parsedData!)
-                    // FIX: Check taskObjCMetaResult for ObjC info
-                    if let objcMeta = taskObjCMetaResult, !objcMeta.classes.isEmpty {
-                        finalStatus += " Found \(objcMeta.classes.count) classes."
-                    } else if taskObjCMetaResult != nil { // Check if ObjC extraction ran but found none
-                        finalStatus += " No ObjC classes found."
-                    }
-                    // FIX: Check taskSwiftMetaResult for Swift info
-                    if let swiftMeta = taskSwiftMetaResult, !swiftMeta.types.isEmpty {
-                         finalStatus += " Found \(swiftMeta.types.count) Swift types."
-                    } else if taskSwiftMetaResult != nil { // Check if Swift extraction ran but found none
-                         finalStatus += " No Swift types found."
-                    }
-                    self.statusMessage = finalStatus.contains("Found") ? finalStatus : "Processing complete. No specific data extracted."
-                }
-            } // End MainActor.run
-        } // End Task.detached
-    } // End processURL
+                    // Success path (parsing completed, ObjC meta might or might not exist but didn't error fatally)
+                     self.errorMessage = nil
+                                         guard let pd = self.parsedData else { self.statusMessage = "Error: State inconsistency."; return }
+                                         var finalStatus = self.generateSummary(for: pd)
+                                         // Use the already assigned properties here now
+                                         if !self.extractedClasses.isEmpty { finalStatus += " Found \(self.extractedClasses.count) classes." }
+                                         else if taskObjCMetaResult != nil { finalStatus += " No ObjC classes found." } // Check if extraction ran
+                                         if !self.extractedSwiftTypes.isEmpty { finalStatus += " Found \(self.extractedSwiftTypes.count) Swift types."}
+                                         else if taskSwiftMetaResult != nil { finalStatus += " No Swift types found." } // Check if extraction ran
+                                         self.statusMessage = finalStatus.contains("Found") ? finalStatus : "Processing complete."
+                                     }
+
+                                     // Trigger UI update via counter
+                                     self.processingUpdateId = UUID()
+
+                                 } // End MainActor.run
+                             } // End Task.detached
+                         } // End processURL
 
     // --- Helper Functions ---
 

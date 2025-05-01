@@ -207,6 +207,70 @@ struct ParsedMachOData {
     }
 }
 
+extension ParsedMachOData {
+    
+    /// Finds the symbol corresponding to the address specified by LC_MAIN.
+    /// This is typically the `start` function in the C runtime.
+    /// Returns nil if LC_MAIN or the corresponding symbol isn't found.
+    func findCRTEntryPointSymbol() -> Symbol? {
+        // 1. Find the LC_MAIN command
+        guard let mainCmdCase = self.loadCommands.first(where: {
+            if case .main = $0 { return true } else { return false }
+        }), case .main(let mainCmdData) = mainCmdCase else {
+            return nil // LC_MAIN not found
+        }
+        
+        // 2. Find the __TEXT segment to calculate the VM address
+        guard let textSegment = self.segments.first(where: { $0.name == "__TEXT" }) else {
+            return nil // __TEXT segment needed for base address
+        }
+        
+        // 3. Calculate the target VM Address
+        // entryoff is the offset *from the start of the file* to the entry code.
+        // The symbol's value (n_value) should be the VM address.
+        // We need to find the symbol whose address corresponds to where entryoff lands.
+        // Simpler: Often the symbol's value directly matches textSegment.vmaddr + mainCmdData.entryoff
+        // However, ASLR makes direct calculation hard.
+        // A more reliable way is to find the symbol whose value matches the expected address
+        // OR directly search for common names like `start`.
+        
+        // Let's try finding the symbol by address first (less reliable due to ASLR in symbol values)
+        // let entryVMAddr = textSegment.command.vmaddr + mainCmdData.entryoff // This isn't quite right for symbol value matching
+        
+        // Let's try finding the symbol by common names first.
+        let possibleNames = ["start", "_start"] // Common CRT entry names
+        if let symbols = self.symbols {
+            for name in possibleNames {
+                if let symbol = symbols.first(where: { $0.name == name && ($0.type == N_SECT || $0.type == N_ABS) && $0.isExternal }) {
+                    // Found a likely candidate by name. Verify its address roughly matches entryoff? (Difficult)
+                    // Let's return the first match by name for now.
+                    print("Found potential CRT entry point by name: \(name)")
+                    return symbol
+                }
+            }
+        }
+        
+        // Fallback: If name search fails, we could try address matching, but it's complex.
+        print("Warning: Could not find common CRT entry point symbol ('start', '_start') by name.")
+        return nil
+    }
+    
+    /// Finds the symbol for the `main` function.
+    /// Returns nil if not found or not suitable (e.g., undefined).
+    func findMainFunctionSymbol() -> Symbol? {
+        guard let symbols = self.symbols else { return nil }
+        
+        // Look for a symbol named "main" or "_main" that is defined in a section
+        // and preferably marked as external.
+        let mainSymbol = symbols.first { symbol in
+            (symbol.name == "main" || symbol.name == "_main") &&
+            (symbol.type == N_SECT) && // Defined in a section
+            symbol.isExternal         // Likely external linkage
+        }
+        
+        return mainSymbol
+    }
+}
 // --- Helper functions for formatting (can go in a separate Utils file) ---
 // --- Helper functions for formatting ---
 

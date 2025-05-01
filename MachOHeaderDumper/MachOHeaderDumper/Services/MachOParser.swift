@@ -273,8 +273,10 @@ class MachOParser {
                                       let dyldInfoCmd: dyld_info_command = try region.read(at: currentOffset)
                                       parsedCmd = .dyldInfo(dyldInfoCmd) // Store the command struct
 
-                                 case UInt32(LC_MAIN):
-                                      parsedCmd = .main
+                                case UInt32(LC_MAIN): // <-- ADD THIS CASE
+                                    guard lc.cmdsize >= MemoryLayout<entry_point_command>.size else { break }
+                                    let mainCmd: entry_point_command = try region.read(at: currentOffset)
+                                    parsedCmd = .main(mainCmd)
 
                                 default:
                                      parsedCmd = .unknown(cmd: lc.cmd, cmdsize: lc.cmdsize)
