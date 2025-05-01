@@ -21,6 +21,7 @@ struct ContentView: View {
         case info = "Info"
         case loadCmds = "Load Cmds"
         case strings = "Strings"
+        case funcStarts = "Func Starts"
         case symbols = "Symbols"
         case dyldInfo = "DyldInfo"
         case exports = "Exports"
@@ -96,6 +97,11 @@ struct ContentView: View {
                                   selectedView = .info // Fallback if strings disappear
                               }
                          }
+            .onChange(of: viewModel.functionStarts) { _ in // Add onChange
+                              if viewModel.functionStarts.isEmpty && selectedView == .funcStarts {
+                                  selectedView = .info
+                              }
+                         }
 
         } // End NavigationView
         // Apply navigationViewStyle *outside* the NavigationView
@@ -117,6 +123,8 @@ struct ContentView: View {
             if viewModel.parsedDyldInfo == nil { needsReset = true }
         case .strings: 
             if viewModel.foundStrings.isEmpty { needsReset = true }
+        case .funcStarts:
+            if viewModel.functionStarts.isEmpty { needsReset = true }
         case .exports:
             if viewModel.parsedDyldInfo == nil || (viewModel.parsedDyldInfo?.exports.isEmpty ?? true) { needsReset = true }
         case .swiftTypes:

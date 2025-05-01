@@ -16,5 +16,9 @@ struct MainContentView: View {
         if !viewModel.foundStrings.isEmpty {
                                  StringsView(strings: viewModel.foundStrings)
         } else { ContentUnavailableView(title: "No Strings Found", description: "Relevant sections might be empty or strings too short.") }
+    case .funcStarts:
+                         if !viewModel.functionStarts.isEmpty {
+                             FunctionStartsView(starts: viewModel.functionStarts)
+                         } else { ContentUnavailableView(title: "No Function Starts", description: "LC_FUNCTION_STARTS command not found or empty.") }
     } } else { if viewModel.errorMessage == nil { ContentUnavailableView(title: "No File Loaded", description: "Tap the button above to import a Mach-O file.", systemImage: "doc.badge.plus") } else { ContentUnavailableView(title: "Parsing Failed", description: viewModel.errorMessage ?? "An unknown error occurred.", systemImage: "xmark.octagon.fill").foregroundColor(.red) } } }.frame(maxWidth: .infinity, maxHeight: .infinity) }
 }

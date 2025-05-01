@@ -29,6 +29,7 @@ class MachOViewModel: ObservableObject {
     @Published var processingUpdateId = UUID()
     @Published var demanglerStatus: DemanglerStatus = .idle
     @Published var foundStrings: [FoundString] = []
+    @Published var functionStarts: [FunctionStart] = []
 
     private var currentParser: MachOParser?
 
@@ -45,6 +46,7 @@ class MachOViewModel: ObservableObject {
         self.generatedHeader = nil
         self.demanglerStatus = .idle
         self.foundStrings = []
+        self.functionStarts = []
         self.statusMessage = "Processing \(url.lastPathComponent)..."
         self.currentParser = nil
 
@@ -57,6 +59,7 @@ class MachOViewModel: ObservableObject {
             var taskObjCMetaResult: ExtractedMetadata? = nil
             var taskHeaderTextResult: String? = nil
             var taskFoundStringsResult: [FoundString]? = nil
+            var taskFunctionStartsResult: [FunctionStart]? = nil
             var taskErrorResult: Error? = nil
             var taskObjCNotFoundErr: MachOParseError? = nil
             var taskDemanglerFunc: DynamicSymbolLookup.SwiftDemangleFunc? = nil
@@ -87,6 +90,23 @@ class MachOViewModel: ObservableObject {
                                 // Use static scanner method
                                 taskFoundStringsResult = StringScanner.scanForStrings(in: parsedResult) // Assign to local var
                                 print("✅ Scanned for strings.")
+                
+                // --- Step 1.2 (NEW): Parse Function Starts ---
+                                await MainActor.run { self.statusMessage = self.generateSummary(for: parsedResult) + " Parsing func starts..." }
+                                do {
+                                    let addresses = try FunctionStartsParser.parseFunctionStarts(in: parsedResult)
+                                    // Convert addresses to FunctionStart structs
+                                    taskFunctionStartsResult = addresses.map { FunctionStart(address: $0) }
+                                    print("✅ Parsed \(taskFunctionStartsResult?.count ?? 0) function starts.")
+                                } catch let error as FunctionStartsParseError where error == .commandNotFound {
+                                     print("ℹ️ LC_FUNCTION_STARTS not found.")
+                                     taskFunctionStartsResult = [] // Indicate parsing ran but found nothing
+                                } catch {
+                                     print("❌ Error parsing function starts: \(error)")
+                                     // Treat as non-fatal for now?
+                                      await MainActor.run { self.errorMessage = "Warning: Function starts parsing failed: \(error.localizedDescription)" }
+                                      taskFunctionStartsResult = nil // Indicate failure
+                                }
                 
                 // --- Step 1.3: Lookup Demangler ---
                 let lookupResult = DynamicSymbolLookup.getSwiftDemangleFunctionPointer(forBinaryPath: binaryURL.path)
@@ -169,6 +189,7 @@ class MachOViewModel: ObservableObject {
                             self.currentParser = taskParser
                             self.parsedData = taskParsedDataResult
                             self.foundStrings = taskFoundStringsResult ?? []
+                            self.functionStarts = taskFunctionStartsResult ?? []
                             self.parsedDyldInfo = taskDyldInfoResult
                             self.extractedSwiftTypes = taskSwiftMetaResult?.types ?? [] // Assign Swift types
 
@@ -230,8 +251,9 @@ class MachOViewModel: ObservableObject {
                                      finalStatus += " No Swift types found."
                                 }
                                  if !self.foundStrings.isEmpty { finalStatus += " Found \(self.foundStrings.count) strings." } // <-- ADD String Count
-                                                      self.statusMessage = finalStatus.contains("Found") ? finalStatus : "Processing complete."
-                                                  }
+                                 if !self.functionStarts.isEmpty { finalStatus += " Found \(self.functionStarts.count) func starts." } // <-- ADD Count
+                                                     self.statusMessage = finalStatus.contains("Found") ? finalStatus : "Processing complete."
+                                                 }
 
                             // --- Trigger UI update via counter ---
                             // Do this LAST after all state is set
