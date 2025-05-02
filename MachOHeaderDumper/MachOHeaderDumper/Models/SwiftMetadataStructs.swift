@@ -95,12 +95,25 @@ struct FieldRecord {
 // Base address needs to be the address *of the pointer itself* in memory
 func resolveRelativePointer(baseAddress: UInt64, relativeOffset: Int32) -> UInt64? {
     if relativeOffset == 0 { return nil }
-    // Formula: TargetAddress = PointerAddress + OffsetValue
-    // Assume baseAddress is the address where the Int32 offset was read from.
-    let offset = Int64(relativeOffset)
-    return baseAddress.addingReportingOverflow(UInt64(offset)).partialValue // Use overflow-checked addition
-}
+    // Convert the relative offset (which can be negative) to Int64 for wider range
+       let offset = Int64(relativeOffset)
 
+       // Perform the addition using signed Int64 arithmetic
+       // Convert the base address (location of the pointer) to Int64 temporarily
+       let targetAddressSigned = Int64(bitPattern: baseAddress) &+ offset // Use overflow addition for safety
+
+       // Convert the result back to UInt64
+       // If the signed result was negative (extremely unlikely for valid addresses,
+       // but possible with large negative offsets), this conversion wraps around.
+       let targetAddressUnsigned = UInt64(bitPattern: targetAddressSigned)
+
+       // Optional: Add a sanity check if needed (e.g., ensure result isn't suspiciously low)
+       // guard targetAddressUnsigned > SOME_REASONABLE_LOWER_BOUND else { return nil }
+
+       // print("      [Debug] resolveRelativePointer: Base=0x\(String(baseAddress, radix: 16)), Offset=\(offset) (0x\(String(relativeOffset, radix: 16))), Result=0x\(String(targetAddressUnsigned, radix: 16))")
+
+       return targetAddressUnsigned
+   }
 // Size constants (ensure correctness for arm64)
 let RELATIVE_POINTER_SIZE = MemoryLayout<Int32>.size
 let TARGET_CONTEXT_DESCRIPTOR_SIZE = 8 // flags(4) + parent(4) (Approx)
