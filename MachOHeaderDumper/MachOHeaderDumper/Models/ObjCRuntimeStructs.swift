@@ -21,7 +21,8 @@ struct objc_list_header_t {
     let count: UInt32
 
     // Size of each element in the list (usually includes the pointer size itself if it's a list of pointers)
-    var elementSize: UInt32 { entsize_and_flags & 0xFFFF_FFFF } // Often just sizeof(void*) or struct size
+    var elementSize: UInt32 { entsize_and_flags }
+    // var elementSize: UInt32 { entsize_and_flags & 0xFFFF_FFFF } // Often just sizeof(void*) or struct size
     var countValue: UInt32 { count }
 }
 
@@ -40,6 +41,13 @@ struct class_ro_t {
     let ivars: UInt64          // VM Address to ivar_list_t or 0
     let weakIvarLayout: UInt64 // VM Address or 0
     let baseProperties: UInt64 // VM Address to property_list_t or 0
+    static let RO_META: UInt32 = (1 << 0)          // class is a metaclass
+    static let RO_ROOT: UInt32 = (1 << 1)          // class is a root class
+    static let RO_HAS_CXX_STRUCTORS: UInt32 = (1 << 2) // class has .cxx_construct/.cxx_destruct implementations
+    // Swift related flags (check source for confirmation/stability)
+    static let RO_IS_SWIFT: UInt32 = (1 << 3)      // class is Swift class
+    static let RO_IS_SWIFT_STABLE: UInt32 = (1 << 4) // Swift class with stable ABI? (Check meaning)
+    var isSwiftClass: Bool { (flags & class_ro_t.RO_IS_SWIFT) != 0 }
 
     // Note: Actual structure might have more fields depending on objc4 version. Adapt as needed.
 }
