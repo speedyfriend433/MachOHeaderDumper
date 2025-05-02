@@ -16,11 +16,10 @@ MachOHeaderDumper provides developers, security researchers, and tweak developer
 *   **Swift Type Extraction:** Identifies Swift classes, structs, enums, and protocols present in the binary metadata. Attempts symbol demangling using `dlsym`.
 *   **Mach-O Structure Analysis:** Displays detailed header information, load commands (including segments, sections, dylib dependencies, UUID, code signature location, etc.), symbol tables (local, external, undefined), and dynamic linking information (rebase, bind, export opcodes).
 *   **On-Device Operation:** All parsing and analysis happens directly on your iOS device.
-*   **File Import:** Import `.dylib`, `.framework`, or `.app` bundles via the native Files app integration.
+*   **File Import:** Import `.dylib`, `.framework`, or `.app` bundle, executable files via the native Files app integration.
 *   **TrollStore Optimized:** Assumes TrollStore installation for necessary file system access outside the standard app sandbox.
 
 ![Screenshot 1](https://github.com/user-attachments/assets/cef49eba-dcec-408c-9bc5-eb18fd6513c7) 
-![Screenshot 2](https://github.com/user-attachments/assets/3c27831e-6503-40db-90f9-3695a2e14315>) 
 
 ## Features
 
