@@ -9,6 +9,7 @@
 
 import Foundation
 import SwiftUI
+import ObjCDump
 
 @MainActor
 class MachOViewModel: ObservableObject {
@@ -18,6 +19,8 @@ class MachOViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var statusMessage: String = "Select a file to parse."
     @Published var showIvarsInHeader: Bool = false
+    @Published var objcHeaderOutput: String? = nil
+    @Published var swiftDumpOutput: String? = nil
 
     // --- Output Data ---
     @Published var parsedData: ParsedMachOData?
