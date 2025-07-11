@@ -40,7 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 -   **Numerous SwiftUI Compiler Errors:** Resolved a series of "unable to type-check this expression" and "no dynamic member" errors by refactoring complex views into smaller, independent structs and `@ViewBuilder` functions.
 -   **Exhaustive Switch Errors:** Corrected all `switch` statements to be exhaustive and match their corresponding `enum` definitions after refactoring.
 
-## [1.2.0] - 2025-07-11
+## [1.0.0] - 2025-05-02
 
 ### Added
 
