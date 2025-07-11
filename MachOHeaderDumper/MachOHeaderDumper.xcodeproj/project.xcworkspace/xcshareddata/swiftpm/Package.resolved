@@ -1,13 +1,13 @@
 {
-  "originHash" : "1eb05625462f068396d266cb4aa2928054072a54bd6e5bbcf79eb2ee4f282b61",
+  "originHash" : "f7b31cd27b16dd0e6ab9ba2ec99c18e3f38c12232f865f03944c9083df307ce9",
   "pins" : [
     {
-      "identity" : "swift-objc-dump",
+      "identity" : "swiftdemangle",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/p-x9/swift-objc-dump.git",
+      "location" : "https://github.com/oozoofrog/SwiftDemangle.git",
       "state" : {
-        "revision" : "1e91dfd4c332f7015f4c46f99df8a53fbb495e20",
-        "version" : "0.7.0"
+        "revision" : "9beeda1a19ac77fd16f9d744326db09ae3f5d563",
+        "version" : "6.0.4"
       }
     }
   ],

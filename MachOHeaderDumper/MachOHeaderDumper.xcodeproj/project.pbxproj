@@ -7,7 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		E16F5DA62DC538A700B65F27 /* ObjCDump in Frameworks */ = {isa = PBXBuildFile; productRef = E16F5DA52DC538A700B65F27 /* ObjCDump */; };
+		E1BA90042E20AED800502124 /* SwiftDemangle in Frameworks */ = {isa = PBXBuildFile; productRef = E1BA90032E20AED800502124 /* SwiftDemangle */; };
+		E1BA90052E20B74400502124 /* SwiftDemangle in Embed Frameworks */ = {isa = PBXBuildFile; productRef = E1BA90032E20AED800502124 /* SwiftDemangle */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -26,6 +27,20 @@
 			remoteInfo = MachOHeaderDumper;
 		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		E1BA90062E20B74400502124 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				E1BA90052E20B74400502124 /* SwiftDemangle in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		E1F847782DC133C0001347AC /* MachOHeaderDumper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MachOHeaderDumper.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -56,7 +71,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				E16F5DA62DC538A700B65F27 /* ObjCDump in Frameworks */,
+				E1BA90042E20AED800502124 /* SwiftDemangle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -107,6 +122,7 @@
 				E1F847742DC133C0001347AC /* Sources */,
 				E1F847752DC133C0001347AC /* Frameworks */,
 				E1F847762DC133C0001347AC /* Resources */,
+				E1BA90062E20B74400502124 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -117,7 +133,7 @@
 			);
 			name = MachOHeaderDumper;
 			packageProductDependencies = (
-				E16F5DA52DC538A700B65F27 /* ObjCDump */,
+				E1BA90032E20AED800502124 /* SwiftDemangle */,
 			);
 			productName = MachOHeaderDumper;
 			productReference = E1F847782DC133C0001347AC /* MachOHeaderDumper.app */;
@@ -202,7 +218,7 @@
 			mainGroup = E1F8476F2DC133C0001347AC;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				E16F5DA42DC538A700B65F27 /* XCRemoteSwiftPackageReference "swift-objc-dump" */,
+				E1BA90022E20AED800502124 /* XCRemoteSwiftPackageReference "SwiftDemangle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E1F847792DC133C0001347AC /* Products */;
@@ -415,7 +431,7 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -445,7 +461,7 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -573,21 +589,21 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		E16F5DA42DC538A700B65F27 /* XCRemoteSwiftPackageReference "swift-objc-dump" */ = {
+		E1BA90022E20AED800502124 /* XCRemoteSwiftPackageReference "SwiftDemangle" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/p-x9/swift-objc-dump.git";
+			repositoryURL = "https://github.com/oozoofrog/SwiftDemangle.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 0.7.0;
+				minimumVersion = 6.0.4;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		E16F5DA52DC538A700B65F27 /* ObjCDump */ = {
+		E1BA90032E20AED800502124 /* SwiftDemangle */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = E16F5DA42DC538A700B65F27 /* XCRemoteSwiftPackageReference "swift-objc-dump" */;
-			productName = ObjCDump;
+			package = E1BA90022E20AED800502124 /* XCRemoteSwiftPackageReference "SwiftDemangle" */;
+			productName = SwiftDemangle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
