@@ -1,14 +1,14 @@
-# MachOHeaderDumper for iOS (TrollStore)
+# MachOHeaderDumper for iOS 
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-**A native iOS application designed for TrollStore environments to dump Objective-C headers, Swift type information, symbols, and structural details from Mach-O binaries directly on-device.** Inspired by `class-dump`, but built entirely in Swift for iOS.
+**A native iOS application to dump Objective-C headers, Swift type information, symbols, and structural details from Mach-O binaries directly on-device.** Inspired by `class-dump`, but built entirely in Swift for iOS.
 
 ---
 
 ## Overview
 
-MachOHeaderDumper provides developers, security researchers, and tweak developers with a powerful on-device tool to inspect iOS applications, frameworks, and dynamic libraries. By leveraging TrollStore's ability to bypass standard sandbox restrictions, this app performs deep static analysis of Mach-O files without requiring a jailbreak or desktop tools for basic header dumping and structural analysis.
+MachOHeaderDumper provides developers, security researchers, and tweak developers with a powerful on-device tool to inspect iOS applications, frameworks, and dynamic libraries.
 
 **Core Capabilities:**
 
@@ -17,7 +17,7 @@ MachOHeaderDumper provides developers, security researchers, and tweak developer
 *   **Mach-O Structure Analysis:** Displays detailed header information, load commands (including segments, sections, dylib dependencies, UUID, code signature location, etc.), symbol tables (local, external, undefined), and dynamic linking information (rebase, bind, export opcodes).
 *   **On-Device Operation:** All parsing and analysis happens directly on your iOS device.
 *   **File Import:** Import `.dylib`, `.framework`, or `.app` bundle, executable files via the native Files app integration.
-*   **TrollStore Optimized:** Assumes TrollStore installation for necessary file system access outside the standard app sandbox.
+~~*   **TrollStore Optimized:** Assumes TrollStore installation for necessary file system access outside the standard app sandbox.~~ <- no longer requires trollstore to install!
 
 ![Screenshot 1](https://github.com/user-attachments/assets/cef49eba-dcec-408c-9bc5-eb18fd6513c7) 
 
@@ -58,9 +58,9 @@ MachOHeaderDumper provides developers, security researchers, and tweak developer
 *   **Concurrency:** Uses `async/await` and `Task.detached` for background parsing to keep the UI responsive. Actor isolation (`MainActor`) is used for UI updates.
 *   **Parsing:** Implements manual parsing of Mach-O structures, Objective-C metadata (`class_ro_t`, `method_t`, etc.), Swift type descriptors, and dyld opcodes (ULEB128/SLEB128 decoding, state machines). Avoids external parsing libraries for core Mach-O structure.
 *   **Demangling:** Relies on runtime availability of `_swift_demangle` via `dlopen`/`dlsym`. Does *not* bundle a static demangler library.
-*   **TrollStore:** Requires TrollStore installation to grant the app the necessary permissions to:
-    *   Read files outside its sandbox (e.g., system frameworks, other app bundles).
-    *   Potentially use `dlopen` on arbitrary binaries (used for demangling).
+~~*   **TrollStore:** Requires TrollStore installation to grant the app the necessary permissions to:~~
+    ~~*   Read files outside its sandbox (e.g., system frameworks, other app bundles).~~
+    ~~*   Potentially use `dlopen` on arbitrary binaries (used for demangling).~~ <- now replaced by Swift-Demangle
 
 ## Installation (Requires TrollStore)
 
@@ -109,7 +109,7 @@ MachOHeaderDumper provides developers, security researchers, and tweak developer
     *   Under "App Thinning", select "None".
     *   **Crucially**, uncheck "Include manifest for over-the-air installation" and **ensure code signing is set to "Sign to Run Locally" or manually configured for no signing**. (The exact steps depend on Xcode version and project setup. The goal is an unsigned IPA).
     *   Export the IPA file.
-    *   Transfer the IPA to your device and install with TrollStore.
+    *   Transfer the IPA to your device and install with any IPA Installer.
 
 ## Contributing
 
