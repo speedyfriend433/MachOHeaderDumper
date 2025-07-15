@@ -1,47 +1,146 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct HexEditorView: View {
     @StateObject var hexViewModel: HexEditorViewModel
-    @State private var showShareSheet = false
-    @State private var patchedFileURL: URL?
+    @State private var isExporting = false
+    @State private var document: PatchedFileDocument?
     @State private var showErrorAlert = false
     @State private var errorMessage = ""
+    @State private var goToAddressString = ""
+    @State private var searchASCIIString = ""
+    @State private var highlightedOffset: Int? = nil
+    @State private var scrollToID: Int?
+    @State private var showSettings = false
+    @State private var showSearchControls = true
+    @State private var fontSize: CGFloat = 12
 
-    private let columns: [GridItem] = Array(repeating: .init(.fixed(22)), count: 16)
+
 
     init(fileData: Data, fileURL: URL) {
         _hexViewModel = StateObject(wrappedValue: try! HexEditorViewModel(fileURL: fileURL))
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 2, pinnedViews: .sectionHeaders) {
-                Section {
-                    ForEach(0..<hexViewModel.totalRowCount, id: \.self) { rowIndex in
-                        HexEditorRow(
-                            viewModel: hexViewModel,
-                            rowIndex: rowIndex
-                        )
+        VStack {
+            if showSearchControls {
+                VStack {
+                    HStack {
+                        TextField("Go to Address (Hex)", text: $goToAddressString)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 14, design: .monospaced))
+                        
+                        Button("Go") {
+                            if let address = Int(goToAddressString, radix: 16) {
+                                let rowIndex = address / hexViewModel.bytesPerRow
+                                scrollToID = rowIndex
+                            }
+                        }
+                        .buttonStyle(.bordered)
                     }
-                } header: {
-                    HexEditorHeaderRow()
-                        .background(.background)
+                    
+                    HStack {
+                        TextField("Search ASCII String", text: $searchASCIIString)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 14, design: .monospaced))
+                        
+                        Button("Search") {
+                            hexViewModel.searchForASCII(string: searchASCIIString)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .padding()
+            }
+
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2, pinnedViews: .sectionHeaders) {
+                        Section {
+                            ForEach(0..<hexViewModel.totalRowCount, id: \.self) { rowIndex in
+                                HexEditorRow(
+                                    viewModel: hexViewModel,
+                                    rowIndex: rowIndex
+                                )
+                                .id(rowIndex)
+                                .frame(height: fontSize + 8)
+                                .onAppear {
+                                    let rowOffset = rowIndex * hexViewModel.bytesPerRow
+                                    let currentPageStart = hexViewModel.currentPage * hexViewModel.pageSize
+                                    let currentPageEnd = currentPageStart + hexViewModel.pageSize
+                                    let threshold = hexViewModel.pageSize / 4
+                                    if rowOffset > currentPageEnd - threshold {
+                                        hexViewModel.loadNextPage()
+                                    } else if rowOffset < currentPageStart + threshold && hexViewModel.currentPage > 0 {
+                                        hexViewModel.loadPreviousPage()
+                                    }
+                                }
+                            }
+                        } header: {
+                            HexEditorHeaderRow(viewModel: hexViewModel)
+                                .background(.background)
+                        }
+                    }
+                    .id(hexViewModel.bytesPerRow)
+                }
+                .onChange(of: scrollToID) { newID in
+                    if let newID = newID {
+                        withAnimation {
+                            scrollProxy.scrollTo(newID, anchor: .center)
+                        }
+                    }
+                }
+                .onChange(of: hexViewModel.foundOffsets) { foundOffsets in
+                    if let firstOffset = foundOffsets.first {
+                        hexViewModel.highlightedOffset = firstOffset
+                        let rowIndex = firstOffset / hexViewModel.bytesPerRow
+                        scrollToID = rowIndex
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            hexViewModel.highlightedOffset = nil
+                        }
+                    }
                 }
             }
+            if showSettings {
+                HexEditorSettingsView(viewModel: hexViewModel, fontSize: $fontSize)
+                    .padding()
+            }
         }
-        .font(.system(size: 12, design: .monospaced))
+        .font(.system(size: fontSize, design: .monospaced))
         .navigationTitle("Hex Editor")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: exportPatchedFile) {
-                    Image(systemName: "square.and.arrow.up")
+                HStack {
+                    Button(action: { showSearchControls.toggle() }) {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    
+                    Button(action: { showSettings.toggle() }) {
+                        Image(systemName: "gear")
+                    }
+
+                    Button(action: { hexViewModel.revertAllEdits() }) {
+                        Image(systemName: "arrow.uturn.backward")
+                    }
+                    .disabled(hexViewModel.edits.isEmpty)
+                    
+                    Button(action: exportPatchedFile) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .disabled(hexViewModel.edits.isEmpty)
                 }
-                .disabled(hexViewModel.edits.isEmpty)
             }
         }
-        .sheet(item: $patchedFileURL) { url in
-            ShareSheet(activityItems: [url])
+        .fileExporter(isPresented: $isExporting, document: document, contentType: .data, defaultFilename: hexViewModel.fileURL.lastPathComponent + "-patched") {
+            result in
+            switch result {
+            case .success(let url):
+                print("Saved to \(url)")
+            case .failure(let error):
+                errorMessage = "Failed to export file: \(error.localizedDescription)"
+                showErrorAlert = true
+            }
         }
         .alert("Error", isPresented: $showErrorAlert) {
             Button("OK", role: .cancel) { }
@@ -51,18 +150,54 @@ struct HexEditorView: View {
     }
 
     private func exportPatchedFile() {
-        let patchedData = hexViewModel.generatePatchedData()
-        let tempDir = FileManager.default.temporaryDirectory
-        let fileName = "PatchedFile.bin"
-        let tempURL = tempDir.appendingPathComponent(fileName)
-
         do {
-            try patchedData.write(to: tempURL, options: .atomic)
-            self.patchedFileURL = tempURL
+            let patchedData = try hexViewModel.generatePatchedData()
+            self.document = PatchedFileDocument(data: patchedData)
+            self.isExporting = true
         } catch {
-            errorMessage = "Failed to write patched file: \(error.localizedDescription)"
+            errorMessage = "Failed to create patched file: \(error.localizedDescription)"
             showErrorAlert = true
         }
+    }
+}
+
+struct HexEditorSettingsView: View {
+    @ObservedObject var viewModel: HexEditorViewModel
+    @Binding var fontSize: CGFloat
+
+    var body: some View {
+        VStack {
+            Stepper("Bytes per Row: \(viewModel.bytesPerRow)", value: $viewModel.bytesPerRow, in: 4...32, step: 4)
+            
+            HStack {
+                Text("Font Size")
+                Slider(value: $fontSize, in: 8...24, step: 1)
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(10)
+    }
+}
+
+struct PatchedFileDocument: FileDocument {
+    static var readableContentTypes: [UTType] = [.data]
+
+    var data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.data = data
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }
 
@@ -74,37 +209,62 @@ struct HexEditorRow: View {
         rowIndex * viewModel.bytesPerRow
     }
 
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(String(format: "%08X", offset))
-                .foregroundColor(.secondary)
+    private var rowData: Data {
+        let start = offset - viewModel.currentPageStartOffset
+        let end = min(start + viewModel.bytesPerRow, viewModel.data.count)
+        if start < 0 || start >= viewModel.data.count { return Data() }
+        return viewModel.data.subdata(in: start..<end)
+    }
 
-            HStack(spacing: 4) {
-                ForEach(0..<viewModel.bytesPerRow, id: \.self) { colIndex in
-                    let byteOffset = offset + colIndex
-                    if byteOffset < viewModel.data.count {
-                        HexByteView(
-                            viewModel: viewModel,
-                            offset: byteOffset
-                        )
-                    } else {
-                        Text("  ")
-                    }
+    var body: some View {
+        ViewThatFits {
+            HStack(spacing: 8) {
+                addressView
+                hexView
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                asciiView
+            }
+            HStack(spacing: 8) {
+                addressView
+                hexView
+            }
+        }
+    }
+
+    private var addressView: some View {
+        Text(String(format: "%08X", offset))
+            .foregroundColor(.secondary)
+            .frame(width: 70, alignment: .leading)
+    }
+
+    private var hexView: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<rowData.count, id: \.self) { index in
+                let byteOffset = offset + index
+                HexByteView(
+                    viewModel: viewModel,
+                    offset: byteOffset
+                )
+            }
+            if rowData.count < viewModel.bytesPerRow {
+                ForEach(0..<(viewModel.bytesPerRow - rowData.count), id: \.self) { _ in
+                    Text("  ")
                 }
             }
-            Text(asciiRepresentation())
-                .lineLimit(1)
         }
+        .frame(minWidth: CGFloat(viewModel.bytesPerRow) * 24, alignment: .leading)
+    }
+
+    private var asciiView: some View {
+        Text(asciiRepresentation())
+            .lineLimit(1)
+            .frame(width: CGFloat(viewModel.bytesPerRow) * 8, alignment: .leading)
     }
 
     private func asciiRepresentation() -> String {
         var representation = ""
-        for i in 0..<viewModel.bytesPerRow {
-            let byteOffset = offset + i
-            if byteOffset < viewModel.data.count {
-                let byte = viewModel.data[byteOffset]
-                representation += (isprint(Int32(byte)) != 0) ? String(UnicodeScalar(byte)) : "."
-            }
+        for byte in rowData {
+            representation += (isprint(Int32(byte)) != 0) ? String(UnicodeScalar(byte)) : "."
         }
         return representation
     }
@@ -121,48 +281,75 @@ struct HexByteView: View {
         viewModel.selectedOffset == offset
     }
 
+    var isHighlighted: Bool {
+        viewModel.highlightedOffset == offset
+    }
+
     var isModified: Bool {
         viewModel.isOffsetModified(offset)
     }
 
-    var byteValue: UInt8 {
-        viewModel.data[offset]
+    var byteValue: UInt8? {
+        let localOffset = offset - viewModel.currentPageStartOffset
+        guard localOffset >= 0 && localOffset < viewModel.data.count else { return nil }
+        return viewModel.data[localOffset]
     }
 
     var body: some View {
-        Text(String(format: "%02X", byteValue))
-            .foregroundColor(isModified ? .blue : .primary)
-            .background(isSelected ? Color.yellow.opacity(0.5) : Color.clear)
-            .cornerRadius(2)
-            .onTapGesture {
-                viewModel.selectedOffset = offset
-                newHexValue = String(format: "%02X", byteValue)
-                showEditPopover = true
+        Group {
+            if let byteValue = byteValue {
+                Text(String(format: "%02X", byteValue))
+                    .foregroundColor(isModified ? .blue : .primary)
+                    .background(isHighlighted ? Color.yellow.opacity(0.7) : (isSelected ? Color.yellow.opacity(0.5) : Color.clear))
+                    .cornerRadius(2)
+                    .onTapGesture {
+                        viewModel.selectedOffset = offset
+                        newHexValue = String(format: "%02X", byteValue)
+                        showEditPopover = true
+                    }
+                    .popover(isPresented: $showEditPopover) {
+                        HexEditPopover(
+                            currentHex: $newHexValue,
+                            offset: offset
+                        ) { newByte in
+                            viewModel.applyEdit(offset: offset, newValue: newByte)
+                            showEditPopover = false
+                        }
+                    }
+            } else {
+                Text("  ")
             }
-            .popover(isPresented: $showEditPopover, arrowEdge: .bottom) {
-                HexEditPopover(
-                    currentHex: $newHexValue,
-                    offset: offset
-                ) { newByte in
-                    viewModel.applyEdit(offset: offset, newValue: newByte)
-                    showEditPopover = false
-                }
-            }
+        }
     }
 }
 
 struct HexEditorHeaderRow: View {
+    @ObservedObject var viewModel: HexEditorViewModel
     var body: some View {
-        HStack(spacing: 8) {
-            Text("Offset")
-                .frame(width: 70, alignment: .leading)
-            Text("00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F")
-                .layoutPriority(1)
-            Text("ASCII")
+        ViewThatFits {
+            HStack(spacing: 8) {
+                Text("Offset")
+                    .frame(width: 70, alignment: .leading)
+                hexHeader
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("ASCII")
+                    .frame(width: CGFloat(viewModel.bytesPerRow) * 8, alignment: .leading)
+            }
+
+            HStack(spacing: 8) {
+                Text("Offset")
+                    .frame(width: 70, alignment: .leading)
+                hexHeader
+            }
         }
         .font(.caption.bold())
         .foregroundColor(.secondary)
         .padding(.horizontal, 5)
+    }
+
+    private var hexHeader: some View {
+        let header = (0..<viewModel.bytesPerRow).map { String(format: "%02X", $0) }.joined(separator: " ")
+        return Text(header)
     }
 }
 
