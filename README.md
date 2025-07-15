@@ -62,10 +62,10 @@ MachOHeaderDumper provides developers, security researchers, and tweak developer
     ~~*   Read files outside its sandbox (e.g., system frameworks, other app bundles).~~
     ~~*   Potentially use `dlopen` on arbitrary binaries (used for demangling).~~ <- now replaced by Swift-Demangle
 
-## Installation (Requires TrollStore)
+## Installation ~~(Requires TrollStore)~~ <- doesn't require anymore!
 
-1.  Download the latest `.tipa` file from the [Releases](https://github.com/speedyfriend433/MachOHeaderDumper/releases/tag/Releases) page.
-2.  Open the downloaded `.tipa` file with TrollStore.
+1.  Download the latest `.ipa` file from the [Releases](https://github.com/speedyfriend433/MachOHeaderDumper/releases/tag/Releases) page.
+2.  Open the downloaded `.ipa` file with any IPA Installers.
 3.  Tap "Install".
 4.  The MachOHeaderDumper app will appear on your Home Screen.
 
