@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = MachOViewModel()
     @State private var showFilePicker = false
+    @State private var selectedTab: Tab = .dump // if you want to launch the app with hex edit tab, change it to .hexEditor
 
     enum Tab: Hashable {
         case dump, structure, symbols, dynamic, hexEditor
@@ -44,7 +45,7 @@ struct ContentView: View {
             Divider()
 
             // MARK: - Main Content: TabView
-            TabView {
+            TabView(selection: $selectedTab) {
                 NavigationView {
                     DumpView(viewModel: viewModel)
                 }
@@ -82,17 +83,19 @@ struct ContentView: View {
                 .tag(Tab.dynamic)
                 
                 NavigationView {
-                    if let fileURL = viewModel.parsedData?.fileURL {
-                         HexEditorView(fileData: (try? Data(contentsOf: fileURL)) ?? Data(), fileURL: fileURL)
-                    } else {
-                         VStack {
-                             ContentUnavailableView(title: "No File Loaded", description: "Import a file to use the Hex Editor.")
+                     Group {
+                         if let fileURL = viewModel.parsedData?.fileURL {
+                             HexEditorView.InitializingView(fileURL: fileURL)
+                         } else {
+                             VStack {
+                                 ContentUnavailableView(title: "No File Loaded", description: "Import a file to use the Hex Editor.")
+                             }
+                             .navigationTitle("Hex Editor")
                          }
-                         .navigationTitle("Hex Editor")
-                    }
-                }
-                .navigationViewStyle(.stack)
-                .tabItem { Label("Hex Edit", systemImage: "square.and.pencil") }
+                     }
+                 }
+                 .navigationViewStyle(.stack)
+                 .tabItem { Label("Hex Edit", systemImage: "square.and.pencil") }
                 .tag(Tab.hexEditor)
 
             }
@@ -102,6 +105,7 @@ struct ContentView: View {
         .sheet(isPresented: $showFilePicker) {
             DocumentPicker { url in
                 viewModel.processURL(url)
+                selectedTab = .dump 
             }
         }
     }
